@@ -6,13 +6,15 @@
 
 {% if own_docs %}
 <table class="doc-table">
-    <thead><tr><th>Name</th><th>Uploaded</th><th>Size</th><th>Actions</th></tr></thead>
+    <thead><tr><th>Name</th><th>Type</th><th>Version</th><th>Uploaded</th><th>Size</th><th>Actions</th></tr></thead>
     <tbody>
     {% for doc_id, doc in own_docs.items() %}
         <tr>
             <td>{{ doc.original_name | e }}</td>
-            <td>{{ doc.uploaded_at[:19] }}</td>
-            <td>{{ doc.size }} B</td>
+            <td>{{ doc.extension | e }}</td>
+            <td>v{{ doc.current_version }}</td>
+            <td>{{ doc.uploaded_at | ts_to_date }}</td>
+            <td>{{ doc.size_bytes }} B</td>
             <td>
                 <a href="{{ url_for('view_document', doc_id=doc_id) }}">View</a>
                 <a href="{{ url_for('download_document', doc_id=doc_id) }}">Download</a>
@@ -34,11 +36,13 @@
 <h2>Shared With You</h2>
 {% if shared_docs %}
 <table class="doc-table">
-    <thead><tr><th>Name</th><th>Actions</th></tr></thead>
+    <thead><tr><th>Name</th><th>Type</th><th>Version</th><th>Actions</th></tr></thead>
     <tbody>
     {% for doc_id, doc in shared_docs.items() %}
         <tr>
             <td>{{ doc.original_name | e }}</td>
+            <td>{{ doc.extension | e }}</td>
+            <td>v{{ doc.current_version }}</td>
             <td>
                 <a href="{{ url_for('view_document', doc_id=doc_id) }}">View</a>
                 <a href="{{ url_for('download_document', doc_id=doc_id) }}">Download</a>

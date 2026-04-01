@@ -5,15 +5,20 @@
 
 <h3>Users ({{ users | length }})</h3>
 <table class="doc-table">
-    <thead><tr><th>ID</th><th>Username</th><th>Role</th><th>Created</th><th>Locked Until</th></tr></thead>
+    <thead>
+        <tr><th>ID</th><th>Username</th><th>Email</th><th>Role</th><th>Created</th><th>Last Login</th><th>Active</th><th>Locked Until</th></tr>
+    </thead>
     <tbody>
     {% for uid, u in users.items() %}
     <tr>
         <td class="mono">{{ uid[:8] }}&hellip;</td>
         <td>{{ u.username | e }}</td>
+        <td>{{ u.get('email', '—') | e }}</td>
         <td>{{ u.role }}</td>
-        <td>{{ u.created_at[:19] }}</td>
-        <td>{{ u.locked_until or '—' }}</td>
+        <td>{{ u.created_at | ts_to_date }}</td>
+        <td>{{ u.last_login | ts_to_date }}</td>
+        <td>{{ 'Yes' if u.get('is_active', True) else 'No' }}</td>
+        <td>{{ u.locked_until | ts_to_date }}</td>
     </tr>
     {% endfor %}
     </tbody>
@@ -21,14 +26,37 @@
 
 <h3>Documents ({{ docs | length }})</h3>
 <table class="doc-table">
-    <thead><tr><th>ID</th><th>Name</th><th>Owner</th><th>Uploaded</th></tr></thead>
+    <thead>
+        <tr><th>ID</th><th>Name</th><th>Owner</th><th>Ver</th><th>Uploaded</th><th>Size</th><th>Deleted</th></tr>
+    </thead>
     <tbody>
     {% for did, d in docs.items() %}
-    <tr>
+    <tr {% if d.get('is_deleted') %}class="deleted-row"{% endif %}>
         <td class="mono">{{ did[:8] }}&hellip;</td>
         <td>{{ d.original_name | e }}</td>
-        <td class="mono">{{ d.owner[:8] }}&hellip;</td>
-        <td>{{ d.uploaded_at[:19] }}</td>
+        <td class="mono">{{ d.owner_id[:8] }}&hellip;</td>
+        <td>v{{ d.current_version }}</td>
+        <td>{{ d.uploaded_at | ts_to_date }}</td>
+        <td>{{ d.size_bytes }} B</td>
+        <td>{{ 'Yes' if d.get('is_deleted') else 'No' }}</td>
+    </tr>
+    {% endfor %}
+    </tbody>
+</table>
+
+<h3>Shares ({{ shares | length }})</h3>
+<table class="doc-table">
+    <thead>
+        <tr><th>ID</th><th>Doc</th><th>Shared With</th><th>Role</th><th>Created</th></tr>
+    </thead>
+    <tbody>
+    {% for sid, s in shares.items() %}
+    <tr>
+        <td class="mono">{{ sid[:8] }}&hellip;</td>
+        <td class="mono">{{ s.doc_id[:8] }}&hellip;</td>
+        <td class="mono">{{ s.shared_with_user_id[:8] }}&hellip;</td>
+        <td>{{ s.role }}</td>
+        <td>{{ s.created_at | ts_to_date }}</td>
     </tr>
     {% endfor %}
     </tbody>

@@ -1,22 +1,22 @@
 import os
+import time
 import uuid
 import hashlib
-import re
 import subprocess
-from pathlib import Path
 from datetime import datetime
+from pathlib import Path
 
 import bcrypt
 from flask import (
     Flask, render_template, request, redirect, url_for,
-    session, flash, abort, Response, g
+    flash, abort, Response, g
 )
 
 from config import Config
 from security import (
     EncryptedStorage, SecurityLogger, SessionManager, RateLimiter,
-    validate_username, validate_password, sanitize_input,
-    safe_filename, safe_file_path, validate_file_upload,
+    validate_username, validate_email, validate_password,
+    sanitize_input, safe_filename, safe_file_path, validate_file_upload,
     require_auth, require_role,
 )
 
@@ -25,8 +25,18 @@ app.config.from_object(Config)
 
 BASE_DIR = Path(__file__).parent
 
+# Extension → canonical MIME type
+_EXT_MIME = {
+    "pdf":  "application/pdf",
+    "txt":  "text/plain",
+    "docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    "png":  "image/png",
+    "jpg":  "image/jpeg",
+    "jpeg": "image/jpeg",
+}
+
 # ---------------------------------------------------------------------------
-# Instantiate security singletons
+# Security singletons
 # ---------------------------------------------------------------------------
 
 storage = EncryptedStorage(str(BASE_DIR / "secret.key"))
@@ -48,40 +58,63 @@ rate_limiter = RateLimiter(
     window_seconds=app.config["RATE_LIMIT_WINDOW"],
 )
 
-# Attach logger to app so require_role decorator can access it
 app.security_logger = security_logger
 
 # ---------------------------------------------------------------------------
-# Data-file path helpers
+# Path helpers
 # ---------------------------------------------------------------------------
 
 def _data(filename: str) -> str:
-    return str(BASE_DIR / app.config["DATA_FOLDER"] / filename)
-
-def load_users():     return storage.load_json(_data("users.json"), default={})
-def save_users(d):    storage.save_json(_data("users.json"), d)
-def load_docs():      return storage.load_json(_data("documents.json"), default={})
-def save_docs(d):     storage.save_json(_data("documents.json"), d)
-def load_shares():    return storage.load_json(_data("shares.json"), default={})
-def save_shares(d):   storage.save_json(_data("shares.json"), d)
-def load_audit():     return storage.load_json(_data("audit.json"), default=[])
-def save_audit(d):    storage.save_json(_data("audit.json"), d)
+    """Absolute path to a file in DATA_FOLDER (works with absolute overrides in tests)."""
+    base = Path(app.config["DATA_FOLDER"])
+    if base.is_absolute():
+        return str(base / filename)
+    return str(BASE_DIR / base / filename)
 
 def _upload_dir() -> Path:
-    return BASE_DIR / app.config["UPLOAD_FOLDER"]
+    base = Path(app.config["UPLOAD_FOLDER"])
+    return base if base.is_absolute() else BASE_DIR / base
+
+# ---------------------------------------------------------------------------
+# Data store helpers
+# ---------------------------------------------------------------------------
+
+def load_users():    return storage.load_json(_data("users.json"),     default={})
+def save_users(d):   storage.save_json(_data("users.json"),     d)
+def load_docs():     return storage.load_json(_data("documents.json"), default={})
+def save_docs(d):    storage.save_json(_data("documents.json"), d)
+def load_shares():   return storage.load_json(_data("shares.json"),    default={})
+def save_shares(d):  storage.save_json(_data("shares.json"),    d)
+def load_audit():    return storage.load_json(_data("audit.json"),     default=[])
+def save_audit(d):   storage.save_json(_data("audit.json"),     d)
 
 # ---------------------------------------------------------------------------
 # Audit helper
 # ---------------------------------------------------------------------------
 
-def audit(event: str, detail: str = "") -> None:
+def audit(
+    event_type: str,
+    doc_id: str = None,
+    doc_name: str = None,
+    details: dict = None,
+) -> None:
+    user = g.get("user") or {}
+    dt = datetime.utcnow()
+    timestamp = (
+        dt.strftime("%Y-%m-%dT%H:%M:%S.")
+        + f"{dt.microsecond // 1000:03d}Z"
+    )
     entries = load_audit()
     entries.append({
-        "timestamp": datetime.utcnow().isoformat(),
-        "event":     event,
-        "user":      g.get("user_id", "anonymous"),
-        "ip":        g.get("ip", ""),
-        "detail":    detail,
+        "audit_id":   str(uuid.uuid4()),
+        "timestamp":  timestamp,
+        "event_type": event_type,
+        "user_id":    g.get("user_id"),
+        "username":   user.get("username", "anonymous"),
+        "doc_id":     doc_id,
+        "doc_name":   doc_name,
+        "ip_address": g.get("ip", ""),
+        "details":    details or {},
     })
     save_audit(entries)
 
@@ -98,41 +131,73 @@ def check_password(plain: str, hashed: str) -> bool:
     return bcrypt.checkpw(plain.encode(), hashed.encode())
 
 # ---------------------------------------------------------------------------
-# Access control helpers
+# Document access helpers
 # ---------------------------------------------------------------------------
 
-def owns_document(user_id: str, doc_id: str) -> bool:
+def _live_doc(doc_id: str) -> dict | None:
+    """Return a document only if it exists and is not soft-deleted."""
     doc = load_docs().get(doc_id)
-    return doc is not None and doc["owner"] == user_id
+    return None if (doc is None or doc.get("is_deleted")) else doc
+
+def owns_document(user_id: str, doc_id: str) -> bool:
+    doc = _live_doc(doc_id)
+    return doc is not None and doc["owner_id"] == user_id
 
 def can_access_document(user_id: str, doc_id: str) -> bool:
-    if owns_document(user_id, doc_id):
+    doc = _live_doc(doc_id)
+    if doc is None:
+        return False
+    if doc["owner_id"] == user_id:
         return True
     for share in load_shares().values():
-        if share["doc_id"] == doc_id and share["shared_with"] == user_id:
-            exp = share.get("expires")
-            if exp and datetime.utcnow().isoformat() > exp:
-                continue
+        if share["doc_id"] == doc_id and share["shared_with_user_id"] == user_id:
             return True
     return False
 
+def can_edit_document(user_id: str, doc_id: str) -> bool:
+    """Owner OR users with 'editor' share role."""
+    if owns_document(user_id, doc_id):
+        return True
+    for share in load_shares().values():
+        if (share["doc_id"] == doc_id
+                and share["shared_with_user_id"] == user_id
+                and share.get("role") == "editor"):
+            return True
+    return False
+
+def get_current_stored_file(doc: dict) -> str:
+    """Return the stored_file path for the document's current version."""
+    cv = doc["current_version"]
+    for v in doc["versions"]:
+        if v["version"] == cv:
+            return v["stored_file"]
+    return doc["versions"][-1]["stored_file"]
+
 # ---------------------------------------------------------------------------
-# Cookie helpers
+# Cookie kwargs
 # ---------------------------------------------------------------------------
 
 def _cookie_kwargs() -> dict:
-    """Return kwargs for set_cookie; disables Secure in non-production."""
     return {
         "httponly": True,
-        "secure":   app.config.get("ENV", "production") == "production"
-                    and not app.config.get("TESTING", False),
+        "secure":   (app.config.get("ENV", "production") == "production"
+                     and not app.config.get("TESTING", False)),
         "samesite": "Lax",
         "max_age":  app.config["SESSION_TIMEOUT"],
     }
 
 # ---------------------------------------------------------------------------
-# Context processor — exposes current_user to all templates
+# Template helpers
 # ---------------------------------------------------------------------------
+
+@app.template_filter("ts_to_date")
+def ts_to_date(ts):
+    if ts is None:
+        return "—"
+    try:
+        return datetime.utcfromtimestamp(float(ts)).strftime("%Y-%m-%d %H:%M")
+    except (ValueError, TypeError, OSError):
+        return str(ts)
 
 @app.context_processor
 def inject_user():
@@ -142,29 +207,27 @@ def inject_user():
     }
 
 # ---------------------------------------------------------------------------
-# @app.before_request
+# before_request
 # ---------------------------------------------------------------------------
 
 @app.before_request
 def before_request() -> None:
     session_manager.cleanup_expired()
-
-    g.ip  = request.remote_addr or ""
-    g.ua  = request.headers.get("User-Agent", "")
+    g.ip      = request.remote_addr or ""
+    g.ua      = request.headers.get("User-Agent", "")
     g.user_id = None
     g.user    = None
 
     token = request.cookies.get("session_token")
     sess  = session_manager.validate_session(token)
     if sess:
-        users = load_users()
-        user  = users.get(sess["user_id"])
-        if user:
+        user = load_users().get(sess["user_id"])
+        if user and user.get("is_active", True):
             g.user_id = sess["user_id"]
             g.user    = user
 
 # ---------------------------------------------------------------------------
-# @app.after_request — Security headers
+# after_request — security headers
 # ---------------------------------------------------------------------------
 
 @app.after_request
@@ -188,7 +251,6 @@ def set_security_headers(response):
     response.headers["Strict-Transport-Security"] = (
         "max-age=31536000; includeSubDomains"
     )
-    # No caching on authenticated responses
     if g.get("user_id") and not request.path.startswith("/static"):
         response.headers["Cache-Control"] = "no-store"
     return response
@@ -198,21 +260,16 @@ def set_security_headers(response):
 # ---------------------------------------------------------------------------
 
 @app.errorhandler(403)
-def forbidden(e):
-    return render_template("403.html"), 403
+def forbidden(e):       return render_template("403.html"), 403
 
 @app.errorhandler(404)
-def not_found(e):
-    return render_template("404.html"), 404
+def not_found(e):       return render_template("404.html"), 404
 
 @app.errorhandler(429)
-def rate_limited(e):
-    return render_template("429.html"), 429
+def rate_limited(e):    return render_template("429.html"), 429
 
 @app.errorhandler(500)
-def internal_error(e):
-    # Never expose stack traces
-    return render_template("500.html"), 500
+def internal_error(e):  return render_template("500.html"), 500
 
 # ---------------------------------------------------------------------------
 # Routes — Authentication
@@ -226,24 +283,27 @@ def index():
 def register():
     if request.method == "POST":
         username = sanitize_input(request.form.get("username", "").strip())
+        email    = request.form.get("email", "").strip().lower()
         password = request.form.get("password", "")
         confirm  = request.form.get("confirm_password", "")
 
         if not validate_username(username):
             security_logger.log_event(
                 SecurityLogger.REGISTER_FAILED, None, g.ip, g.ua,
-                details={"reason": "invalid username", "username": username},
-                severity="WARNING",
+                details={"reason": "invalid username"}, severity="WARNING",
             )
             flash("Username must be 3–20 alphanumeric/underscore characters.")
+            return render_template("register.html")
+
+        if not validate_email(email):
+            flash("Please enter a valid email address.")
             return render_template("register.html")
 
         errors = validate_password(password)
         if errors:
             security_logger.log_event(
                 SecurityLogger.REGISTER_FAILED, None, g.ip, g.ua,
-                details={"reason": "weak password"},
-                severity="WARNING",
+                details={"reason": "weak password"}, severity="WARNING",
             )
             for e in errors:
                 flash(e)
@@ -258,21 +318,29 @@ def register():
             if u["username"].lower() == username.lower():
                 flash("Username already taken.")
                 return render_template("register.html")
+            if u.get("email", "").lower() == email:
+                flash("Email already registered.")
+                return render_template("register.html")
 
         user_id = str(uuid.uuid4())
         users[user_id] = {
-            "username":      username,
-            "password":      hash_password(password),
-            "role":          "user",
-            "created_at":    datetime.utcnow().isoformat(),
-            "failed_logins": 0,
-            "locked_until":  None,
+            "user_id":         user_id,
+            "username":        username,
+            "email":           email,
+            "password_hash":   hash_password(password),
+            "role":            "user",
+            "created_at":      time.time(),
+            "failed_attempts": 0,
+            "locked_until":    None,
+            "last_login":      None,
+            "is_active":       True,
         }
         save_users(users)
         security_logger.log_event(
             SecurityLogger.REGISTER_SUCCESS, user_id, g.ip, g.ua,
             details={"username": username},
         )
+        audit("REGISTER_SUCCESS")
         flash("Account created. Please log in.")
         return redirect(url_for("login"))
 
@@ -284,12 +352,10 @@ def login():
         username = request.form.get("username", "").strip()
         password = request.form.get("password", "")
 
-        # Rate limit by IP
         if not rate_limiter.is_allowed(g.ip):
             security_logger.log_event(
                 SecurityLogger.RATE_LIMIT_EXCEEDED, None, g.ip, g.ua,
-                details={"endpoint": "login"},
-                severity="WARNING",
+                details={"endpoint": "login"}, severity="WARNING",
             )
             flash("Too many login attempts. Please wait and try again.")
             return render_template("login.html"), 429
@@ -302,24 +368,21 @@ def login():
 
         def fail(msg: str):
             if user_id:
-                users[user_id]["failed_logins"] = (
-                    users[user_id].get("failed_logins", 0) + 1
+                users[user_id]["failed_attempts"] = (
+                    users[user_id].get("failed_attempts", 0) + 1
                 )
-                if users[user_id]["failed_logins"] >= app.config["MAX_FAILED_ATTEMPTS"]:
-                    from datetime import timedelta
+                if users[user_id]["failed_attempts"] >= app.config["MAX_FAILED_ATTEMPTS"]:
                     users[user_id]["locked_until"] = (
-                        datetime.utcnow().isoformat()
-                    )  # stored; lock enforced by comparing failed_logins
+                        time.time() + app.config["LOCKOUT_DURATION"]
+                    )
                     security_logger.log_event(
                         SecurityLogger.ACCOUNT_LOCKED, user_id, g.ip, g.ua,
-                        details={"username": username},
-                        severity="WARNING",
+                        details={"username": username}, severity="WARNING",
                     )
                 save_users(users)
             security_logger.log_event(
                 SecurityLogger.LOGIN_FAILED, user_id, g.ip, g.ua,
-                details={"username": username},
-                severity="WARNING",
+                details={"username": username}, severity="WARNING",
             )
             flash(msg)
             return render_template("login.html")
@@ -329,27 +392,27 @@ def login():
 
         user = users[user_id]
 
-        # Account lockout check
-        if user.get("failed_logins", 0) >= app.config["MAX_FAILED_ATTEMPTS"]:
-            locked_at = user.get("locked_until")
-            if locked_at:
-                from datetime import timedelta
-                locked_dt  = datetime.fromisoformat(locked_at)
-                unlock_dt  = locked_dt + timedelta(seconds=app.config["LOCKOUT_DURATION"])
-                if datetime.utcnow() < unlock_dt:
-                    flash("Account temporarily locked. Try again later.")
-                    return render_template("login.html")
-                # Lockout expired — reset
-                users[user_id]["failed_logins"] = 0
-                users[user_id]["locked_until"]  = None
-                save_users(users)
+        if not user.get("is_active", True):
+            flash("This account has been deactivated.")
+            return render_template("login.html")
 
-        if not check_password(password, user["password"]):
+        # Lockout check
+        locked_until = user.get("locked_until")
+        if locked_until and time.time() < float(locked_until):
+            flash("Account temporarily locked. Try again later.")
+            return render_template("login.html")
+        if locked_until and time.time() >= float(locked_until):
+            users[user_id]["failed_attempts"] = 0
+            users[user_id]["locked_until"]    = None
+            save_users(users)
+
+        if not check_password(password, user["password_hash"]):
             return fail("Invalid username or password.")
 
         # Success
-        users[user_id]["failed_logins"] = 0
-        users[user_id]["locked_until"]  = None
+        users[user_id]["failed_attempts"] = 0
+        users[user_id]["locked_until"]    = None
+        users[user_id]["last_login"]      = time.time()
         save_users(users)
 
         token = session_manager.create_session(user_id, g.ip, g.ua)
@@ -357,6 +420,7 @@ def login():
             SecurityLogger.LOGIN_SUCCESS, user_id, g.ip, g.ua,
             details={"username": username},
         )
+        audit("LOGIN_SUCCESS")
 
         resp = redirect(url_for("dashboard"))
         resp.set_cookie("session_token", token, **_cookie_kwargs())
@@ -369,9 +433,8 @@ def login():
 def logout():
     token = request.cookies.get("session_token")
     session_manager.destroy_session(token)
-    security_logger.log_event(
-        SecurityLogger.LOGOUT, g.user_id, g.ip, g.ua,
-    )
+    security_logger.log_event(SecurityLogger.LOGOUT, g.user_id, g.ip, g.ua)
+    audit("LOGOUT")
     resp = redirect(url_for("login"))
     resp.delete_cookie("session_token")
     flash("You have been logged out.")
@@ -387,24 +450,26 @@ def dashboard():
     docs    = load_docs()
     shares  = load_shares()
     user_id = g.user_id
-    now_iso = datetime.utcnow().isoformat()
 
-    own_docs = {k: v for k, v in docs.items() if v["owner"] == user_id}
+    own_docs = {
+        k: v for k, v in docs.items()
+        if v["owner_id"] == user_id and not v.get("is_deleted")
+    }
 
     shared_doc_ids = {
         s["doc_id"] for s in shares.values()
-        if s["shared_with"] == user_id
-        and (not s.get("expires") or now_iso < s["expires"])
+        if s["shared_with_user_id"] == user_id
     }
-    shared_docs = {k: v for k, v in docs.items() if k in shared_doc_ids}
+    shared_docs = {
+        k: v for k, v in docs.items()
+        if k in shared_doc_ids and not v.get("is_deleted")
+    }
 
     security_logger.log_event(
         SecurityLogger.DATA_ACCESS, user_id, g.ip, g.ua,
         details={"view": "dashboard"},
     )
-    return render_template("dashboard.html",
-                           own_docs=own_docs,
-                           shared_docs=shared_docs)
+    return render_template("dashboard.html", own_docs=own_docs, shared_docs=shared_docs)
 
 # ---------------------------------------------------------------------------
 # Routes — Documents
@@ -414,14 +479,11 @@ def dashboard():
 @require_auth
 def upload():
     if request.method == "POST":
-        if "file" not in request.files:
+        if "file" not in request.files or not request.files["file"].filename:
             flash("No file selected.")
             return render_template("upload.html")
 
         f = request.files["file"]
-        if not f.filename:
-            flash("No file selected.")
-            return render_template("upload.html")
 
         valid, reason = validate_file_upload(
             f,
@@ -441,40 +503,127 @@ def upload():
         try:
             fname = safe_filename(
                 f.filename, app.config["ALLOWED_EXTENSIONS"],
-                logger=security_logger,
-                user_id=g.user_id, ip=g.ip, ua=g.ua,
+                logger=security_logger, user_id=g.user_id, ip=g.ip, ua=g.ua,
             )
         except ValueError as exc:
             flash(str(exc))
             return render_template("upload.html")
 
-        doc_id   = str(uuid.uuid4())
-        enc_name = doc_id + ".enc"
+        ext         = fname.rsplit(".", 1)[-1].lower()
+        mime_type   = _EXT_MIME.get(ext, "application/octet-stream")
+        doc_id      = str(uuid.uuid4())
+        stored_name = doc_id
+        stored_file = f"{stored_name}_v1.enc"
+
         raw_data = f.read()
         enc_data = storage.encrypt_file(raw_data)
 
-        dest = _upload_dir() / enc_name
+        dest = _upload_dir() / stored_file
         dest.parent.mkdir(parents=True, exist_ok=True)
         dest.write_bytes(enc_data)
 
+        now = time.time()
         docs = load_docs()
         docs[doc_id] = {
-            "original_name": fname,
-            "enc_filename":  enc_name,
-            "owner":         g.user_id,
-            "uploaded_at":   datetime.utcnow().isoformat(),
-            "size":          len(raw_data),
-            "checksum":      hashlib.sha256(raw_data).hexdigest(),
+            "doc_id":          doc_id,
+            "original_name":   fname,
+            "stored_name":     stored_name,
+            "owner_id":        g.user_id,
+            "uploaded_at":     now,
+            "size_bytes":      len(raw_data),
+            "mime_type":       mime_type,
+            "extension":       ext,
+            "current_version": 1,
+            "versions": [
+                {
+                    "version":     1,
+                    "stored_file": stored_file,
+                    "uploaded_at": now,
+                    "uploaded_by": g.user_id,
+                    "size_bytes":  len(raw_data),
+                }
+            ],
+            "is_deleted": False,
         }
         save_docs(docs)
         security_logger.log_event(
             SecurityLogger.FILE_UPLOAD, g.user_id, g.ip, g.ua,
-            details={"filename": fname, "size": len(raw_data)},
+            details={"filename": fname, "size_bytes": len(raw_data), "doc_id": doc_id},
         )
+        audit("FILE_UPLOAD", doc_id=doc_id, doc_name=fname)
         flash("File uploaded and encrypted successfully.")
         return redirect(url_for("dashboard"))
 
     return render_template("upload.html")
+
+@app.route("/document/<doc_id>/version", methods=["POST"])
+@require_auth
+def upload_version(doc_id):
+    if not can_edit_document(g.user_id, doc_id):
+        security_logger.log_event(
+            SecurityLogger.ACCESS_DENIED, g.user_id, g.ip, g.ua,
+            details={"doc_id": doc_id, "action": "version_upload"},
+            severity="WARNING",
+        )
+        abort(403)
+
+    docs = load_docs()
+    doc  = docs.get(doc_id)
+    if not doc or doc.get("is_deleted"):
+        abort(404)
+
+    if "file" not in request.files or not request.files["file"].filename:
+        flash("No file selected.")
+        return redirect(url_for("view_document", doc_id=doc_id))
+
+    f = request.files["file"]
+    valid, reason = validate_file_upload(
+        f,
+        app.config["ALLOWED_EXTENSIONS"],
+        app.config["ALLOWED_MIME_TYPES"],
+        app.config["MAX_CONTENT_LENGTH"],
+    )
+    if not valid:
+        flash(f"Upload rejected: {reason}")
+        return redirect(url_for("view_document", doc_id=doc_id))
+
+    try:
+        safe_filename(
+            f.filename, app.config["ALLOWED_EXTENSIONS"],
+            logger=security_logger, user_id=g.user_id, ip=g.ip, ua=g.ua,
+        )
+    except ValueError as exc:
+        flash(str(exc))
+        return redirect(url_for("view_document", doc_id=doc_id))
+
+    new_version = doc["current_version"] + 1
+    stored_file = f"{doc['stored_name']}_v{new_version}.enc"
+
+    raw_data = f.read()
+    enc_data = storage.encrypt_file(raw_data)
+    (_upload_dir() / stored_file).write_bytes(enc_data)
+
+    now = time.time()
+    doc["versions"].append({
+        "version":     new_version,
+        "stored_file": stored_file,
+        "uploaded_at": now,
+        "uploaded_by": g.user_id,
+        "size_bytes":  len(raw_data),
+    })
+    doc["current_version"] = new_version
+    doc["size_bytes"]      = len(raw_data)
+    docs[doc_id] = doc
+    save_docs(docs)
+
+    security_logger.log_event(
+        SecurityLogger.VERSION_UPLOAD, g.user_id, g.ip, g.ua,
+        details={"doc_id": doc_id, "version": new_version},
+    )
+    audit("VERSION_UPLOAD", doc_id=doc_id, doc_name=doc["original_name"],
+          details={"version": new_version})
+    flash(f"Version {new_version} uploaded.")
+    return redirect(url_for("view_document", doc_id=doc_id))
 
 @app.route("/document/<doc_id>")
 @require_auth
@@ -482,19 +631,21 @@ def view_document(doc_id):
     if not can_access_document(g.user_id, doc_id):
         security_logger.log_event(
             SecurityLogger.ACCESS_DENIED, g.user_id, g.ip, g.ua,
-            details={"doc_id": doc_id},
-            severity="WARNING",
+            details={"doc_id": doc_id}, severity="WARNING",
         )
         abort(403)
-    docs = load_docs()
-    doc  = docs.get(doc_id)
+    doc = _live_doc(doc_id)
     if not doc:
         abort(404)
+
+    can_edit = can_edit_document(g.user_id, doc_id)
     security_logger.log_event(
         SecurityLogger.DATA_ACCESS, g.user_id, g.ip, g.ua,
         details={"doc_id": doc_id},
     )
-    return render_template("document.html", doc=doc, doc_id=doc_id)
+    audit("DATA_ACCESS", doc_id=doc_id, doc_name=doc["original_name"])
+    return render_template("document.html", doc=doc, doc_id=doc_id,
+                           can_edit=can_edit)
 
 @app.route("/document/<doc_id>/download")
 @require_auth
@@ -502,35 +653,36 @@ def download_document(doc_id):
     if not can_access_document(g.user_id, doc_id):
         security_logger.log_event(
             SecurityLogger.ACCESS_DENIED, g.user_id, g.ip, g.ua,
-            details={"doc_id": doc_id, "action": "download"},
-            severity="WARNING",
+            details={"doc_id": doc_id, "action": "download"}, severity="WARNING",
         )
         abort(403)
-    docs = load_docs()
-    doc  = docs.get(doc_id)
+    doc = _live_doc(doc_id)
     if not doc:
         abort(404)
 
+    stored_file = get_current_stored_file(doc)
     try:
         safe_file_path(
-            doc["enc_filename"], str(_upload_dir()),
-            logger=security_logger,
-            user_id=g.user_id, ip=g.ip, ua=g.ua,
+            stored_file, str(_upload_dir()),
+            logger=security_logger, user_id=g.user_id, ip=g.ip, ua=g.ua,
         )
     except ValueError:
         abort(400)
 
-    enc_data = (_upload_dir() / doc["enc_filename"]).read_bytes()
+    enc_data = (_upload_dir() / stored_file).read_bytes()
     plain    = storage.decrypt_file(enc_data)
+
     security_logger.log_event(
         SecurityLogger.FILE_DOWNLOAD, g.user_id, g.ip, g.ua,
-        details={"doc_id": doc_id, "filename": doc["original_name"]},
+        details={"doc_id": doc_id, "filename": doc["original_name"],
+                 "version": doc["current_version"]},
     )
+    audit("FILE_DOWNLOAD", doc_id=doc_id, doc_name=doc["original_name"])
     return Response(
         plain,
         headers={
             "Content-Disposition": f'attachment; filename="{doc["original_name"]}"',
-            "Content-Type": "application/octet-stream",
+            "Content-Type": doc.get("mime_type", "application/octet-stream"),
         },
     )
 
@@ -540,23 +692,23 @@ def delete_document(doc_id):
     if not owns_document(g.user_id, doc_id):
         security_logger.log_event(
             SecurityLogger.ACCESS_DENIED, g.user_id, g.ip, g.ua,
-            details={"doc_id": doc_id, "action": "delete"},
-            severity="WARNING",
+            details={"doc_id": doc_id, "action": "delete"}, severity="WARNING",
         )
         abort(403)
     docs = load_docs()
-    doc  = docs.pop(doc_id, None)
+    doc  = docs.get(doc_id)
     if not doc:
         abort(404)
 
-    (_upload_dir() / doc["enc_filename"]).unlink(missing_ok=True)
-    shares = {k: v for k, v in load_shares().items() if v["doc_id"] != doc_id}
-    save_shares(shares)
+    # Soft delete — encrypted files kept on disk; owner retains recovery option
+    docs[doc_id]["is_deleted"] = True
     save_docs(docs)
+
     security_logger.log_event(
         SecurityLogger.FILE_DELETE, g.user_id, g.ip, g.ua,
         details={"doc_id": doc_id, "filename": doc["original_name"]},
     )
+    audit("FILE_DELETE", doc_id=doc_id, doc_name=doc["original_name"])
     flash("Document deleted.")
     return redirect(url_for("dashboard"))
 
@@ -571,8 +723,12 @@ def share_document(doc_id):
         abort(403)
 
     if request.method == "POST":
-        target_username = sanitize_input(request.form.get("username", "").strip())
-        expires_in      = request.form.get("expires_in", "").strip()
+        target_username = sanitize_input(
+            request.form.get("username", "").strip()
+        )
+        role = request.form.get("role", "viewer")
+        if role not in ("viewer", "editor"):
+            role = "viewer"
 
         users     = load_users()
         target_id = next(
@@ -587,32 +743,29 @@ def share_document(doc_id):
             flash("You cannot share with yourself.")
             return render_template("share.html", doc_id=doc_id)
 
-        expires = None
-        if expires_in:
-            try:
-                from datetime import timedelta
-                expires = (
-                    datetime.utcnow() + timedelta(hours=int(expires_in))
-                ).isoformat()
-            except ValueError:
-                flash("Invalid expiry value.")
-                return render_template("share.html", doc_id=doc_id)
-
         share_id = str(uuid.uuid4())
         shares   = load_shares()
         shares[share_id] = {
-            "doc_id":      doc_id,
-            "shared_by":   g.user_id,
-            "shared_with": target_id,
-            "created_at":  datetime.utcnow().isoformat(),
-            "expires":     expires,
+            "share_id":            share_id,
+            "doc_id":              doc_id,
+            "owner_id":            g.user_id,
+            "shared_with_user_id": target_id,
+            "role":                role,
+            "created_at":          time.time(),
+            "granted_by":          g.user_id,
         }
         save_shares(shares)
+
+        doc = _live_doc(doc_id)
         security_logger.log_event(
             SecurityLogger.SHARE_CREATED, g.user_id, g.ip, g.ua,
-            details={"doc_id": doc_id, "shared_with": target_username},
+            details={"doc_id": doc_id, "shared_with": target_username,
+                     "role": role},
         )
-        flash(f"Document shared with {target_username}.")
+        audit("SHARE_CREATED", doc_id=doc_id,
+              doc_name=doc["original_name"] if doc else None,
+              details={"shared_with": target_username, "role": role})
+        flash(f"Document shared with {target_username} as {role}.")
         return redirect(url_for("dashboard"))
 
     return render_template("share.html", doc_id=doc_id)
@@ -644,8 +797,8 @@ def audit_log():
 
 def ensure_tls_cert() -> None:
     cert_dir = BASE_DIR / app.config["CERT_FOLDER"]
-    cert     = cert_dir / "cert.pem"
-    key      = cert_dir / "key.pem"
+    cert = cert_dir / "cert.pem"
+    key  = cert_dir / "key.pem"
     if cert.exists() and key.exists():
         return
     cert_dir.mkdir(parents=True, exist_ok=True)
@@ -660,11 +813,6 @@ def ensure_tls_cert() -> None:
         check=True,
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
-    )
-    security_logger.log_event(
-        SecurityLogger.SUSPICIOUS_ACTIVITY, None, "localhost", "",
-        details={"action": "tls_cert_generated", "path": str(cert)},
-        severity="INFO",
     )
 
 # ---------------------------------------------------------------------------

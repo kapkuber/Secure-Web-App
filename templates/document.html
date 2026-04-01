@@ -4,14 +4,16 @@
 <div class="auth-card">
     <h2>{{ doc.original_name | e }}</h2>
     <dl class="doc-meta">
-        <dt>Uploaded</dt><dd>{{ doc.uploaded_at[:19] }}</dd>
-        <dt>Size</dt><dd>{{ doc.size }} bytes</dd>
-        <dt>SHA-256</dt><dd class="mono">{{ doc.checksum }}</dd>
+        <dt>Uploaded</dt>     <dd>{{ doc.uploaded_at | ts_to_date }}</dd>
+        <dt>Size</dt>         <dd>{{ doc.size_bytes }} bytes</dd>
+        <dt>Type</dt>         <dd>{{ doc.mime_type | e }}</dd>
+        <dt>Version</dt>      <dd>{{ doc.current_version }}</dd>
     </dl>
+
     <a href="{{ url_for('download_document', doc_id=doc_id) }}" class="btn btn-primary">
-        Download (decrypted)
+        Download v{{ doc.current_version }}
     </a>
-    {% if doc.owner == current_user_id %}
+    {% if doc.owner_id == current_user_id %}
     <a href="{{ url_for('share_document', doc_id=doc_id) }}" class="btn">Share</a>
     <form method="post" action="{{ url_for('delete_document', doc_id=doc_id) }}"
           style="display:inline"
@@ -21,4 +23,32 @@
     {% endif %}
     <a href="{{ url_for('dashboard') }}" class="btn">Back</a>
 </div>
+
+<h3>Version History</h3>
+<table class="doc-table">
+    <thead><tr><th>Version</th><th>Uploaded</th><th>Size</th><th>Uploaded By</th></tr></thead>
+    <tbody>
+    {% for v in doc.versions | sort(attribute='version', reverse=True) %}
+    <tr {% if v.version == doc.current_version %}class="current-version"{% endif %}>
+        <td>v{{ v.version }}{% if v.version == doc.current_version %} <span class="badge">current</span>{% endif %}</td>
+        <td>{{ v.uploaded_at | ts_to_date }}</td>
+        <td>{{ v.size_bytes }} B</td>
+        <td class="mono">{{ v.uploaded_by[:8] }}&hellip;</td>
+    </tr>
+    {% endfor %}
+    </tbody>
+</table>
+
+{% if can_edit %}
+<h3>Upload New Version</h3>
+<form method="post" action="{{ url_for('upload_version', doc_id=doc_id) }}"
+      enctype="multipart/form-data" class="auth-card" style="max-width:100%">
+    <div class="form-group">
+        <label for="file">Replacement file (same type recommended)</label>
+        <input type="file" id="file" name="file" required
+               accept=".pdf,.txt,.docx,.png,.jpg,.jpeg">
+    </div>
+    <button type="submit" class="btn btn-primary">Upload &amp; Encrypt</button>
+</form>
+{% endif %}
 {% endblock %}

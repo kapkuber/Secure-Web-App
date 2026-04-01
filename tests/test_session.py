@@ -1,4 +1,4 @@
-"""Tests for SessionManager: creation, validation, expiry, invalidation."""
+"""Tests for SessionManager and session integration."""
 import json
 import time
 import uuid
@@ -9,7 +9,7 @@ from app import app, hash_password
 
 
 # ---------------------------------------------------------------------------
-# Unit tests for SessionManager directly
+# Unit tests — SessionManager directly
 # ---------------------------------------------------------------------------
 
 @pytest.fixture
@@ -19,106 +19,104 @@ def mgr(tmp_path):
         str(tmp_path / "security.log"),
         str(tmp_path / "access.log"),
     )
-    sessions_file = str(tmp_path / "sessions.json")
+    sf = str(tmp_path / "sessions.json")
     (tmp_path / "sessions.json").write_text("{}")
-    return SessionManager(
-        sessions_file=sessions_file,
-        session_timeout=30,
-        storage=store,
-        logger=logger,
-    )
+    return SessionManager(sf, session_timeout=30, storage=store, logger=logger)
 
 
 class TestSessionManagerUnit:
-    def test_create_session_returns_token(self, mgr):
-        token = mgr.create_session("user1", "127.0.0.1", "TestAgent")
-        assert isinstance(token, str) and len(token) > 16
+    def test_create_returns_token(self, mgr):
+        t = mgr.create_session("u1", "127.0.0.1", "UA")
+        assert isinstance(t, str) and len(t) > 16
 
-    def test_validate_valid_session(self, mgr):
-        token = mgr.create_session("user1", "127.0.0.1", "TestAgent")
-        sess  = mgr.validate_session(token)
+    def test_validate_valid_token(self, mgr):
+        t    = mgr.create_session("u1", "127.0.0.1", "UA")
+        sess = mgr.validate_session(t)
         assert sess is not None
-        assert sess["user_id"] == "user1"
+        assert sess["user_id"] == "u1"
 
-    def test_validate_missing_token_returns_none(self, mgr):
-        assert mgr.validate_session("nonexistent") is None
+    def test_validate_unknown_token(self, mgr):
+        assert mgr.validate_session("bad-token") is None
 
-    def test_validate_empty_token_returns_none(self, mgr):
-        assert mgr.validate_session("") is None
+    def test_validate_none_and_empty(self, mgr):
         assert mgr.validate_session(None) is None
+        assert mgr.validate_session("") is None
 
-    def test_destroy_session_invalidates_token(self, mgr):
-        token = mgr.create_session("user1", "127.0.0.1", "TestAgent")
-        mgr.destroy_session(token)
-        assert mgr.validate_session(token) is None
+    def test_destroy_invalidates(self, mgr):
+        t = mgr.create_session("u1", "127.0.0.1", "UA")
+        mgr.destroy_session(t)
+        assert mgr.validate_session(t) is None
 
     def test_expired_session_returns_none(self, tmp_path):
-        """Use a 1-second timeout and manually back-date last_activity."""
-        store  = EncryptedStorage(str(tmp_path / "secret.key"))
-        logger = SecurityLogger(
-            str(tmp_path / "security.log"),
-            str(tmp_path / "access.log"),
-        )
-        sessions_file = str(tmp_path / "sessions.json")
-        (tmp_path / "sessions.json").write_text("{}")
-        mgr2 = SessionManager(sessions_file, session_timeout=1,
-                              storage=store, logger=logger)
+        store  = EncryptedStorage(str(tmp_path / "sk.key"))
+        logger = SecurityLogger(str(tmp_path / "s.log"), str(tmp_path / "a.log"))
+        sf = str(tmp_path / "sess.json")
+        (tmp_path / "sess.json").write_text("{}")
+        mgr2 = SessionManager(sf, session_timeout=1, storage=store, logger=logger)
 
-        token = mgr2.create_session("u1", "127.0.0.1", "UA")
-        # Force expiry by manipulating last_activity
-        data = store.load_json(sessions_file)
-        data[token]["last_activity"] = time.time() - 10
-        store.save_json(sessions_file, data)
-
-        assert mgr2.validate_session(token) is None
+        t = mgr2.create_session("u1", "127.0.0.1", "UA")
+        data = store.load_json(sf)
+        data[t]["last_activity"] = time.time() - 100
+        store.save_json(sf, data)
+        assert mgr2.validate_session(t) is None
 
     def test_cleanup_removes_expired(self, tmp_path):
-        store  = EncryptedStorage(str(tmp_path / "secret.key"))
-        logger = SecurityLogger(
-            str(tmp_path / "security.log"),
-            str(tmp_path / "access.log"),
-        )
-        sessions_file = str(tmp_path / "sessions.json")
-        (tmp_path / "sessions.json").write_text("{}")
-        mgr2 = SessionManager(sessions_file, session_timeout=1,
-                              storage=store, logger=logger)
+        store  = EncryptedStorage(str(tmp_path / "sk.key"))
+        logger = SecurityLogger(str(tmp_path / "s.log"), str(tmp_path / "a.log"))
+        sf = str(tmp_path / "sess.json")
+        (tmp_path / "sess.json").write_text("{}")
+        mgr2 = SessionManager(sf, session_timeout=1, storage=store, logger=logger)
 
-        token = mgr2.create_session("u1", "127.0.0.1", "UA")
-        data  = store.load_json(sessions_file)
-        data[token]["last_activity"] = time.time() - 100
-        store.save_json(sessions_file, data)
+        t = mgr2.create_session("u1", "127.0.0.1", "UA")
+        data = store.load_json(sf)
+        data[t]["last_activity"] = time.time() - 100
+        store.save_json(sf, data)
 
         mgr2.cleanup_expired()
-        assert store.load_json(sessions_file) == {}
+        assert store.load_json(sf) == {}
 
     def test_validate_updates_last_activity(self, mgr):
-        token  = mgr.create_session("u1", "127.0.0.1", "UA")
-        before = mgr._load()[token]["last_activity"]
+        t      = mgr.create_session("u1", "127.0.0.1", "UA")
+        before = mgr._load()[t]["last_activity"]
         time.sleep(0.05)
-        mgr.validate_session(token)
-        after  = mgr._load()[token]["last_activity"]
-        assert after >= before
+        mgr.validate_session(t)
+        assert mgr._load()[t]["last_activity"] >= before
+
+    def test_session_schema_fields(self, mgr):
+        t    = mgr.create_session("u1", "10.0.0.1", "TestAgent/1.0")
+        sess = mgr._load()[t]
+        for field in ("token", "user_id", "created_at",
+                      "last_activity", "ip_address", "user_agent"):
+            assert field in sess, f"Missing field: {field}"
+        assert isinstance(sess["created_at"], float)
+        assert isinstance(sess["last_activity"], float)
 
 
 # ---------------------------------------------------------------------------
 # Integration tests via Flask routes
 # ---------------------------------------------------------------------------
 
+def _make_user_record(username, password):
+    uid = str(uuid.uuid4())
+    return uid, {
+        "user_id":         uid,
+        "username":        username,
+        "email":           f"{username}@example.com",
+        "password_hash":   hash_password(password),
+        "role":            "user",
+        "created_at":      time.time(),
+        "failed_attempts": 0,
+        "locked_until":    None,
+        "last_login":      None,
+        "is_active":       True,
+    }
+
+
 @pytest.fixture
 def env(tmp_path):
-    user_id = str(uuid.uuid4())
-    users = {
-        user_id: {
-            "username": "sessionuser",
-            "password": hash_password("Str0ng!Password#1"),
-            "role": "user",
-            "created_at": "2024-01-01T00:00:00",
-            "failed_logins": 0,
-            "locked_until": None,
-        }
-    }
+    uid, user = _make_user_record("sessionuser", "Str0ng!Password#1")
     for name, content in (
-        ("users.json", users), ("sessions.json", {}),
+        ("users.json", {uid: user}), ("sessions.json", {}),
         ("documents.json", {}), ("shares.json", {}), ("audit.json", []),
     ):
         (tmp_path / name).write_text(json.dumps(content))
@@ -126,61 +124,62 @@ def env(tmp_path):
     app.config.update({
         "TESTING": True,
         "SESSION_COOKIE_SECURE": False,
-        "DATA_FOLDER": str(tmp_path),
+        "DATA_FOLDER":    str(tmp_path),
         "SESSION_TIMEOUT": 1800,
     })
-    return {"tmp_path": tmp_path, "user_id": user_id}
+    return {"tmp_path": tmp_path, "user_id": uid}
 
 
 class TestSessionIntegration:
-    def test_login_creates_server_side_session(self, env):
+    def test_login_creates_server_session(self, env):
         with app.test_client() as c:
             c.post("/login", data={
                 "username": "sessionuser", "password": "Str0ng!Password#1",
             })
-            sessions = json.loads(
-                (env["tmp_path"] / "sessions.json").read_text()
-            )
-            assert len(sessions) == 1
+        sessions = json.loads((env["tmp_path"] / "sessions.json").read_text())
+        assert len(sessions) == 1
 
-    def test_logout_removes_server_side_session(self, env):
+    def test_logout_removes_server_session(self, env):
         with app.test_client() as c:
             c.post("/login", data={
                 "username": "sessionuser", "password": "Str0ng!Password#1",
             })
             c.get("/logout")
-            sessions = json.loads(
-                (env["tmp_path"] / "sessions.json").read_text()
-            )
-            assert len(sessions) == 0
+        sessions = json.loads((env["tmp_path"] / "sessions.json").read_text())
+        assert len(sessions) == 0
 
     def test_expired_session_denied(self, env):
         with app.test_client() as c:
             c.post("/login", data={
                 "username": "sessionuser", "password": "Str0ng!Password#1",
             })
-            # Back-date last_activity to force expiry
-            sessions = json.loads(
-                (env["tmp_path"] / "sessions.json").read_text()
-            )
+            sessions = json.loads((env["tmp_path"] / "sessions.json").read_text())
             for token in sessions:
                 sessions[token]["last_activity"] = time.time() - 99999
-            (env["tmp_path"] / "sessions.json").write_text(
-                json.dumps(sessions)
-            )
+            (env["tmp_path"] / "sessions.json").write_text(json.dumps(sessions))
             r = c.get("/dashboard", follow_redirects=True)
             assert b"login" in r.data.lower()
 
-    def test_cleared_server_session_denies_cookie(self, env):
+    def test_server_side_revocation_denies_cookie(self, env):
         with app.test_client() as c:
             c.post("/login", data={
                 "username": "sessionuser", "password": "Str0ng!Password#1",
             })
-            # Simulate server-side invalidation (e.g. admin revoke)
             (env["tmp_path"] / "sessions.json").write_text("{}")
             r = c.get("/dashboard", follow_redirects=True)
             assert b"login" in r.data.lower()
 
-    def test_session_cookie_config(self, env):
+    def test_inactive_user_denied(self, env):
+        users = json.loads((env["tmp_path"] / "users.json").read_text())
+        for uid in users:
+            users[uid]["is_active"] = False
+        (env["tmp_path"] / "users.json").write_text(json.dumps(users))
+        with app.test_client() as c:
+            r = c.post("/login", data={
+                "username": "sessionuser", "password": "Str0ng!Password#1",
+            }, follow_redirects=True)
+            assert b"deactivated" in r.data.lower()
+
+    def test_cookie_config(self, env):
         assert app.config["SESSION_COOKIE_HTTPONLY"] is True
         assert app.config["SESSION_COOKIE_SAMESITE"] == "Lax"

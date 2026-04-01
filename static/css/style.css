@@ -128,6 +128,30 @@ body {
 h2 { margin-top: 1.5rem; margin-bottom: 0.5rem; }
 h3 { margin-top: 1.5rem; margin-bottom: 0.5rem; font-size: 1.1rem; }
 
+/* Form select */
+.form-group select {
+    width: 100%;
+    padding: 0.55rem 0.75rem;
+    border: 1px solid #ccd;
+    border-radius: 4px;
+    font-size: 1rem;
+    background: #fff;
+}
+
+/* Version table */
+tr.current-version td { background: #f0f2ff; font-weight: 600; }
+tr.deleted-row td     { opacity: 0.45; text-decoration: line-through; }
+.badge {
+    display: inline-block;
+    padding: 0 0.4rem;
+    background: #5b6ee1;
+    color: #fff;
+    border-radius: 3px;
+    font-size: 0.7rem;
+    vertical-align: middle;
+}
+small.hint { display: block; color: #888; font-size: 0.78rem; margin-top: 0.2rem; }
+
 /* Error pages */
 .error-page {
     text-align: center;
