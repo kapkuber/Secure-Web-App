@@ -1,0 +1,24 @@
+{% extends "base.html" %}
+{% block title %}{{ doc.original_name | e }} — SecureWebApp{% endblock %}
+{% block content %}
+<div class="auth-card">
+    <h2>{{ doc.original_name | e }}</h2>
+    <dl class="doc-meta">
+        <dt>Uploaded</dt><dd>{{ doc.uploaded_at[:19] }}</dd>
+        <dt>Size</dt><dd>{{ doc.size }} bytes</dd>
+        <dt>SHA-256</dt><dd class="mono">{{ doc.checksum }}</dd>
+    </dl>
+    <a href="{{ url_for('download_document', doc_id=doc_id) }}" class="btn btn-primary">
+        Download (decrypted)
+    </a>
+    {% if doc.owner == current_user_id %}
+    <a href="{{ url_for('share_document', doc_id=doc_id) }}" class="btn">Share</a>
+    <form method="post" action="{{ url_for('delete_document', doc_id=doc_id) }}"
+          style="display:inline"
+          onsubmit="return confirm('Permanently delete this document?')">
+        <button type="submit" class="btn danger">Delete</button>
+    </form>
+    {% endif %}
+    <a href="{{ url_for('dashboard') }}" class="btn">Back</a>
+</div>
+{% endblock %}

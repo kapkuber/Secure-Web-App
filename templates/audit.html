@@ -1,0 +1,19 @@
+{% extends "base.html" %}
+{% block title %}Audit Log — SecureWebApp{% endblock %}
+{% block content %}
+<h2>Audit Log</h2>
+<table class="doc-table">
+    <thead><tr><th>Timestamp</th><th>Event</th><th>User</th><th>IP</th><th>Detail</th></tr></thead>
+    <tbody>
+    {% for entry in entries | reverse %}
+    <tr>
+        <td>{{ entry.timestamp[:19] }}</td>
+        <td>{{ entry.event | e }}</td>
+        <td>{{ entry.user | e }}</td>
+        <td>{{ entry.ip | e }}</td>
+        <td>{{ entry.detail | e }}</td>
+    </tr>
+    {% endfor %}
+    </tbody>
+</table>
+{% endblock %}

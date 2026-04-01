@@ -1,0 +1,36 @@
+{% extends "base.html" %}
+{% block title %}Admin — SecureWebApp{% endblock %}
+{% block content %}
+<h2>Admin Panel</h2>
+
+<h3>Users ({{ users | length }})</h3>
+<table class="doc-table">
+    <thead><tr><th>ID</th><th>Username</th><th>Role</th><th>Created</th><th>Locked Until</th></tr></thead>
+    <tbody>
+    {% for uid, u in users.items() %}
+    <tr>
+        <td class="mono">{{ uid[:8] }}&hellip;</td>
+        <td>{{ u.username | e }}</td>
+        <td>{{ u.role }}</td>
+        <td>{{ u.created_at[:19] }}</td>
+        <td>{{ u.locked_until or '—' }}</td>
+    </tr>
+    {% endfor %}
+    </tbody>
+</table>
+
+<h3>Documents ({{ docs | length }})</h3>
+<table class="doc-table">
+    <thead><tr><th>ID</th><th>Name</th><th>Owner</th><th>Uploaded</th></tr></thead>
+    <tbody>
+    {% for did, d in docs.items() %}
+    <tr>
+        <td class="mono">{{ did[:8] }}&hellip;</td>
+        <td>{{ d.original_name | e }}</td>
+        <td class="mono">{{ d.owner[:8] }}&hellip;</td>
+        <td>{{ d.uploaded_at[:19] }}</td>
+    </tr>
+    {% endfor %}
+    </tbody>
+</table>
+{% endblock %}

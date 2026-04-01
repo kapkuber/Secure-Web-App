@@ -1,0 +1,21 @@
+{% extends "base.html" %}
+{% block title %}Share Document — SecureWebApp{% endblock %}
+{% block content %}
+<div class="auth-card">
+    <h2>Share Document</h2>
+    <form method="post" action="{{ url_for('share_document', doc_id=doc_id) }}">
+        <div class="form-group">
+            <label for="username">Share with (username)</label>
+            <input type="text" id="username" name="username" required
+                   maxlength="32" autocomplete="off">
+        </div>
+        <div class="form-group">
+            <label for="expires_in">Expires in (hours, leave blank for no expiry)</label>
+            <input type="number" id="expires_in" name="expires_in"
+                   min="1" max="8760" placeholder="e.g. 24">
+        </div>
+        <button type="submit" class="btn btn-primary">Share</button>
+        <a href="{{ url_for('dashboard') }}" class="btn">Cancel</a>
+    </form>
+</div>
+{% endblock %}

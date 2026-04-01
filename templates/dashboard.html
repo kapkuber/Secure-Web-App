@@ -1,0 +1,53 @@
+{% extends "base.html" %}
+{% block title %}Dashboard — SecureWebApp{% endblock %}
+{% block content %}
+<h2>Your Documents</h2>
+<a href="{{ url_for('upload') }}" class="btn btn-primary">Upload New</a>
+
+{% if own_docs %}
+<table class="doc-table">
+    <thead><tr><th>Name</th><th>Uploaded</th><th>Size</th><th>Actions</th></tr></thead>
+    <tbody>
+    {% for doc_id, doc in own_docs.items() %}
+        <tr>
+            <td>{{ doc.original_name | e }}</td>
+            <td>{{ doc.uploaded_at[:19] }}</td>
+            <td>{{ doc.size }} B</td>
+            <td>
+                <a href="{{ url_for('view_document', doc_id=doc_id) }}">View</a>
+                <a href="{{ url_for('download_document', doc_id=doc_id) }}">Download</a>
+                <a href="{{ url_for('share_document', doc_id=doc_id) }}">Share</a>
+                <form method="post" action="{{ url_for('delete_document', doc_id=doc_id) }}"
+                      style="display:inline"
+                      onsubmit="return confirm('Delete this document?')">
+                    <button type="submit" class="btn-link danger">Delete</button>
+                </form>
+            </td>
+        </tr>
+    {% endfor %}
+    </tbody>
+</table>
+{% else %}
+<p>No documents yet.</p>
+{% endif %}
+
+<h2>Shared With You</h2>
+{% if shared_docs %}
+<table class="doc-table">
+    <thead><tr><th>Name</th><th>Actions</th></tr></thead>
+    <tbody>
+    {% for doc_id, doc in shared_docs.items() %}
+        <tr>
+            <td>{{ doc.original_name | e }}</td>
+            <td>
+                <a href="{{ url_for('view_document', doc_id=doc_id) }}">View</a>
+                <a href="{{ url_for('download_document', doc_id=doc_id) }}">Download</a>
+            </td>
+        </tr>
+    {% endfor %}
+    </tbody>
+</table>
+{% else %}
+<p>Nothing shared with you yet.</p>
+{% endif %}
+{% endblock %}
