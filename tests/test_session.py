@@ -178,7 +178,7 @@ class TestSessionIntegration:
             r = c.post("/login", data={
                 "username": "sessionuser", "password": "Str0ng!Password#1",
             }, follow_redirects=True)
-            assert b"deactivated" in r.data.lower()
+            assert b"disabled" in r.data.lower()
 
     def test_cookie_config(self, env):
         assert app.config["SESSION_COOKIE_HTTPONLY"] is True

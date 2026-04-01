@@ -43,7 +43,7 @@ class TestRegistration:
     def test_successful_registration(self, client):
         r = register(client)
         assert r.status_code == 200
-        assert b"login" in r.data.lower()
+        assert b"registration successful" in r.data.lower()
 
     def test_duplicate_username_rejected(self, client):
         register(client)
@@ -101,11 +101,11 @@ class TestLogin:
     def test_wrong_password(self, client):
         register(client)
         r = login(client, password="WrongPassword!1")
-        assert b"invalid" in r.data.lower()
+        assert b"invalid credentials" in r.data.lower()
 
     def test_nonexistent_user(self, client):
         r = login(client, username="nobody")
-        assert b"invalid" in r.data.lower()
+        assert b"invalid credentials" in r.data.lower()
 
     def test_failed_attempts_incremented(self, tmp_path, client):
         register(client)
@@ -127,7 +127,7 @@ class TestLogin:
         for _ in range(5):
             login(client, password="WrongPassword!1")
         r = login(client, password="Str0ng!Password#1")
-        assert b"lock" in r.data.lower() or b"invalid" in r.data.lower()
+        assert b"locked" in r.data.lower()
 
     def test_locked_until_is_float_timestamp(self, tmp_path, client):
         register(client)
@@ -139,6 +139,54 @@ class TestLogin:
         assert isinstance(u["locked_until"], float)
         assert u["locked_until"] > time.time()
 
+    def test_locked_message_contains_minutes(self, client):
+        register(client)
+        for _ in range(5):
+            login(client, password="WrongPassword!1")
+        r = login(client, password="Str0ng!Password#1")
+        assert b"minute" in r.data.lower()
+
+    def test_disabled_account_message(self, tmp_path, client):
+        register(client)
+        users = json.loads((tmp_path / "users.json").read_text())
+        for uid in users:
+            users[uid]["is_active"] = False
+        (tmp_path / "users.json").write_text(json.dumps(users))
+        r = login(client)
+        assert b"disabled" in r.data.lower()
+
+
+class TestFirstUserAdmin:
+    def test_first_registered_user_is_admin(self, tmp_path, client):
+        register(client)
+        users = json.loads((tmp_path / "users.json").read_text())
+        u = next(iter(users.values()))
+        assert u["role"] == "admin"
+
+    def test_second_user_is_not_admin(self, tmp_path, client):
+        register(client)
+        register(client, username="second", email="second@example.com")
+        users = json.loads((tmp_path / "users.json").read_text())
+        roles = [u["role"] for u in users.values()]
+        assert roles.count("admin") == 1
+        assert "user" in roles
+
+
+class TestGetRedirects:
+    def test_register_redirects_when_logged_in(self, client):
+        register(client)
+        login(client)
+        r = client.get("/register", follow_redirects=False)
+        assert r.status_code == 302
+        assert "/dashboard" in r.headers["Location"]
+
+    def test_login_redirects_when_logged_in(self, client):
+        register(client)
+        login(client)
+        r = client.get("/login", follow_redirects=False)
+        assert r.status_code == 302
+        assert "/dashboard" in r.headers["Location"]
+
 
 class TestLogout:
     def test_logout_clears_session(self, client):
@@ -147,3 +195,9 @@ class TestLogout:
         client.get("/logout", follow_redirects=True)
         r = client.get("/dashboard", follow_redirects=True)
         assert b"login" in r.data.lower()
+
+    def test_logout_flash_message(self, client):
+        register(client)
+        login(client)
+        r = client.get("/logout", follow_redirects=True)
+        assert b"logged out" in r.data.lower()

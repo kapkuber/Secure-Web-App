@@ -9,7 +9,7 @@ from pathlib import Path
 import bcrypt
 from flask import (
     Flask, render_template, request, redirect, url_for,
-    flash, abort, Response, g
+    flash, abort, Response, g, make_response
 )
 
 from config import Config
@@ -180,9 +180,10 @@ def get_current_stored_file(doc: dict) -> str:
 def _cookie_kwargs() -> dict:
     return {
         "httponly": True,
-        "secure":   (app.config.get("ENV", "production") == "production"
-                     and not app.config.get("TESTING", False)),
-        "samesite": "Lax",
+        # secure=True in production; relaxed only when TESTING=True so the
+        # Werkzeug http:// test client can transmit the cookie.
+        "secure":   not app.config.get("TESTING", False),
+        "samesite": "Strict",
         "max_age":  app.config["SESSION_TIMEOUT"],
     }
 
@@ -281,9 +282,12 @@ def index():
 
 @app.route("/register", methods=["GET", "POST"])
 def register():
+    if g.user_id:
+        return redirect(url_for("dashboard"))
+
     if request.method == "POST":
         username = sanitize_input(request.form.get("username", "").strip())
-        email    = request.form.get("email", "").strip().lower()
+        email    = sanitize_input(request.form.get("email", "").strip().lower())
         password = request.form.get("password", "")
         confirm  = request.form.get("confirm_password", "")
 
@@ -296,6 +300,10 @@ def register():
             return render_template("register.html")
 
         if not validate_email(email):
+            security_logger.log_event(
+                SecurityLogger.REGISTER_FAILED, None, g.ip, g.ua,
+                details={"reason": "invalid email"}, severity="WARNING",
+            )
             flash("Please enter a valid email address.")
             return render_template("register.html")
 
@@ -322,13 +330,15 @@ def register():
                 flash("Email already registered.")
                 return render_template("register.html")
 
+        # First user becomes admin; all subsequent users are "user"
+        role    = "admin" if not users else "user"
         user_id = str(uuid.uuid4())
         users[user_id] = {
             "user_id":         user_id,
             "username":        username,
             "email":           email,
             "password_hash":   hash_password(password),
-            "role":            "user",
+            "role":            role,
             "created_at":      time.time(),
             "failed_attempts": 0,
             "locked_until":    None,
@@ -338,19 +348,22 @@ def register():
         save_users(users)
         security_logger.log_event(
             SecurityLogger.REGISTER_SUCCESS, user_id, g.ip, g.ua,
-            details={"username": username},
+            details={"username": username, "role": role},
         )
         audit("REGISTER_SUCCESS")
-        flash("Account created. Please log in.")
+        flash("Registration successful, please log in")
         return redirect(url_for("login"))
 
     return render_template("register.html")
 
 @app.route("/login", methods=["GET", "POST"])
 def login():
+    if g.user_id:
+        return redirect(url_for("dashboard"))
+
     if request.method == "POST":
-        username = request.form.get("username", "").strip()
-        password = request.form.get("password", "")
+        username = sanitize_input(request.form.get("username", "").strip())
+        password = sanitize_input(request.form.get("password", ""))
 
         if not rate_limiter.is_allowed(g.ip):
             security_logger.log_event(
@@ -367,6 +380,7 @@ def login():
         )
 
         def fail(msg: str):
+            """Increment failed_attempts, lock if threshold reached, log and flash."""
             if user_id:
                 users[user_id]["failed_attempts"] = (
                     users[user_id].get("failed_attempts", 0) + 1
@@ -377,39 +391,56 @@ def login():
                     )
                     security_logger.log_event(
                         SecurityLogger.ACCOUNT_LOCKED, user_id, g.ip, g.ua,
+                        details={"username": username,
+                                 "locked_until": users[user_id]["locked_until"]},
+                        severity="ERROR",
+                    )
+                else:
+                    security_logger.log_event(
+                        SecurityLogger.LOGIN_FAILED, user_id, g.ip, g.ua,
                         details={"username": username}, severity="WARNING",
                     )
                 save_users(users)
-            security_logger.log_event(
-                SecurityLogger.LOGIN_FAILED, user_id, g.ip, g.ua,
-                details={"username": username}, severity="WARNING",
-            )
+            else:
+                # Unknown username — still log to avoid revealing user existence
+                security_logger.log_event(
+                    SecurityLogger.LOGIN_FAILED, None, g.ip, g.ua,
+                    details={"username": username}, severity="WARNING",
+                )
             flash(msg)
             return render_template("login.html")
 
         if not user_id:
-            return fail("Invalid username or password.")
+            return fail("Invalid credentials")
 
         user = users[user_id]
 
         if not user.get("is_active", True):
-            flash("This account has been deactivated.")
+            flash("Account disabled")
             return render_template("login.html")
 
         # Lockout check
         locked_until = user.get("locked_until")
         if locked_until and time.time() < float(locked_until):
-            flash("Account temporarily locked. Try again later.")
+            minutes_left = max(1, int((float(locked_until) - time.time()) / 60) + 1)
+            security_logger.log_event(
+                SecurityLogger.ACCOUNT_LOCKED, user_id, g.ip, g.ua,
+                details={"username": username, "minutes_remaining": minutes_left},
+                severity="WARNING",
+            )
+            flash(f"Account locked for {minutes_left} minute(s)")
             return render_template("login.html")
+
+        # Expired lockout — reset silently before checking password
         if locked_until and time.time() >= float(locked_until):
             users[user_id]["failed_attempts"] = 0
             users[user_id]["locked_until"]    = None
             save_users(users)
 
         if not check_password(password, user["password_hash"]):
-            return fail("Invalid username or password.")
+            return fail("Invalid credentials")
 
-        # Success
+        # ---- Successful authentication ----
         users[user_id]["failed_attempts"] = 0
         users[user_id]["locked_until"]    = None
         users[user_id]["last_login"]      = time.time()
@@ -422,9 +453,15 @@ def login():
         )
         audit("LOGIN_SUCCESS")
 
-        resp = redirect(url_for("dashboard"))
-        resp.set_cookie("session_token", token, **_cookie_kwargs())
-        return resp
+        response = make_response(redirect("/dashboard"))
+        response.set_cookie(
+            "session_token", token,
+            httponly=True,
+            secure=not app.config.get("TESTING", False),
+            samesite="Strict",
+            max_age=app.config["SESSION_TIMEOUT"],
+        )
+        return response
 
     return render_template("login.html")
 
@@ -435,10 +472,10 @@ def logout():
     session_manager.destroy_session(token)
     security_logger.log_event(SecurityLogger.LOGOUT, g.user_id, g.ip, g.ua)
     audit("LOGOUT")
-    resp = redirect(url_for("login"))
-    resp.delete_cookie("session_token")
-    flash("You have been logged out.")
-    return resp
+    response = make_response(redirect(url_for("login")))
+    response.delete_cookie("session_token")
+    flash("You have been logged out")
+    return response
 
 # ---------------------------------------------------------------------------
 # Routes — Dashboard

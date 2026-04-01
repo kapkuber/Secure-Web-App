@@ -215,11 +215,13 @@ class TestAdminAccess:
             login_as(c, "alice", env["alice_pass"])
             assert c.get("/admin").status_code == 403
 
-    def test_admin_user_can_access_admin(self, env):
-        admin_id, admin = _make_user("adminuser", "Str0ng!Admin#1", role="admin")
+    def test_admin_role_user_can_access_admin(self, env):
+        # Promote alice to admin directly in the data store
         users = json.loads((env["tmp_path"] / "users.json").read_text())
-        users[admin_id] = admin
+        for uid in users:
+            if users[uid]["username"] == "alice":
+                users[uid]["role"] = "admin"
         (env["tmp_path"] / "users.json").write_text(json.dumps(users))
         with app.test_client() as c:
-            login_as(c, "adminuser", "Str0ng!Admin#1")
+            login_as(c, "alice", env["alice_pass"])
             assert c.get("/admin").status_code == 200
