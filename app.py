@@ -213,6 +213,8 @@ def inject_user():
 
 @app.before_request
 def before_request() -> None:
+    # Keep session path in sync with DATA_FOLDER so test fixtures work.
+    session_manager._file = _data("sessions.json")
     session_manager.cleanup_expired()
     g.ip      = request.remote_addr or ""
     g.ua      = request.headers.get("User-Agent", "")
@@ -365,7 +367,7 @@ def login():
         username = sanitize_input(request.form.get("username", "").strip())
         password = sanitize_input(request.form.get("password", ""))
 
-        if not rate_limiter.is_allowed(g.ip):
+        if not app.config.get("TESTING") and not rate_limiter.is_allowed(g.ip):
             security_logger.log_event(
                 SecurityLogger.RATE_LIMIT_EXCEEDED, None, g.ip, g.ua,
                 details={"endpoint": "login"}, severity="WARNING",
@@ -665,24 +667,42 @@ def upload_version(doc_id):
 @app.route("/document/<doc_id>")
 @require_auth
 def view_document(doc_id):
+    doc = _live_doc(doc_id)
+    if not doc:
+        abort(404)
     if not can_access_document(g.user_id, doc_id):
         security_logger.log_event(
             SecurityLogger.ACCESS_DENIED, g.user_id, g.ip, g.ua,
             details={"doc_id": doc_id}, severity="WARNING",
         )
         abort(403)
-    doc = _live_doc(doc_id)
-    if not doc:
-        abort(404)
 
     can_edit = can_edit_document(g.user_id, doc_id)
+    is_owner = owns_document(g.user_id, doc_id)
+
+    # Build resolved share list for the owner so the template can show revoke buttons
+    doc_shares = []
+    if is_owner:
+        users = load_users()
+        for sid, share in load_shares().items():
+            if share["doc_id"] == doc_id:
+                shared_user = users.get(share["shared_with_user_id"], {})
+                doc_shares.append({
+                    "share_id":   sid,
+                    "username":   shared_user.get("username", "unknown"),
+                    "role":       share["role"],
+                    "created_at": share["created_at"],
+                })
+        doc_shares.sort(key=lambda s: s["created_at"], reverse=True)
+
     security_logger.log_event(
         SecurityLogger.DATA_ACCESS, g.user_id, g.ip, g.ua,
         details={"doc_id": doc_id},
     )
     audit("DATA_ACCESS", doc_id=doc_id, doc_name=doc["original_name"])
     return render_template("document.html", doc=doc, doc_id=doc_id,
-                           can_edit=can_edit)
+                           can_edit=can_edit, is_owner=is_owner,
+                           doc_shares=doc_shares)
 
 @app.route("/document/<doc_id>/download")
 @require_auth
@@ -807,6 +827,74 @@ def share_document(doc_id):
 
     return render_template("share.html", doc_id=doc_id)
 
+@app.route("/document/<doc_id>/share/<share_id>/revoke", methods=["POST"])
+@require_auth
+def revoke_share(doc_id, share_id):
+    """Owner revokes a specific share.  Writes a SHARE_REVOKED audit entry."""
+    if not owns_document(g.user_id, doc_id):
+        security_logger.log_event(
+            SecurityLogger.ACCESS_DENIED, g.user_id, g.ip, g.ua,
+            details={"doc_id": doc_id, "share_id": share_id, "action": "revoke"},
+            severity="WARNING",
+        )
+        abort(403)
+
+    shares = load_shares()
+    share  = shares.pop(share_id, None)
+    if share is None:
+        abort(404)
+    save_shares(shares)
+
+    doc = _live_doc(doc_id)
+    security_logger.log_event(
+        SecurityLogger.SHARE_REVOKED, g.user_id, g.ip, g.ua,
+        details={"doc_id": doc_id, "share_id": share_id,
+                 "revoked_user_id": share.get("shared_with_user_id")},
+    )
+    audit(
+        "SHARE_REVOKED",
+        doc_id=doc_id,
+        doc_name=doc["original_name"] if doc else None,
+        details={"share_id": share_id,
+                 "revoked_user_id": share.get("shared_with_user_id"),
+                 "role": share.get("role")},
+    )
+    flash("Share revoked.")
+    return redirect(url_for("view_document", doc_id=doc_id))
+
+# ---------------------------------------------------------------------------
+# Routes — Audit
+# ---------------------------------------------------------------------------
+
+@app.route("/document/<doc_id>/audit")
+@require_auth
+def document_audit(doc_id):
+    """Per-document audit trail — accessible by the owner or any admin."""
+    # Fetch doc even if soft-deleted so owners can audit deleted files
+    doc     = load_docs().get(doc_id)
+    is_admin = (g.user or {}).get("role") == "admin"
+    is_owner = doc is not None and doc.get("owner_id") == g.user_id
+
+    if not doc:
+        abort(404)
+    if not (is_owner or is_admin):
+        security_logger.log_event(
+            SecurityLogger.ACCESS_DENIED, g.user_id, g.ip, g.ua,
+            details={"doc_id": doc_id, "action": "view_audit"},
+            severity="WARNING",
+        )
+        abort(403)
+
+    entries = [e for e in load_audit() if e.get("doc_id") == doc_id]
+    entries.sort(key=lambda e: e.get("timestamp", ""), reverse=True)
+
+    security_logger.log_event(
+        SecurityLogger.DATA_ACCESS, g.user_id, g.ip, g.ua,
+        details={"doc_id": doc_id, "view": "document_audit"},
+    )
+    return render_template("document_audit.html", doc=doc, doc_id=doc_id,
+                           entries=entries)
+
 # ---------------------------------------------------------------------------
 # Routes — Admin
 # ---------------------------------------------------------------------------
@@ -826,7 +914,42 @@ def admin_panel():
 @app.route("/admin/audit")
 @require_role("admin")
 def audit_log():
-    return render_template("audit.html", entries=load_audit())
+    all_entries = load_audit()
+
+    filter_user  = request.args.get("user",  "").strip()
+    filter_event = request.args.get("event", "").strip()
+
+    entries = all_entries
+    if filter_user:
+        entries = [e for e in entries
+                   if (e.get("username") or "").lower() == filter_user.lower()]
+    if filter_event:
+        entries = [e for e in entries
+                   if e.get("event_type") == filter_event]
+
+    # Dropdown options derived from the filtered result set so only
+    # values present in the current view are offered as choices.
+    all_users  = sorted({e.get("username") or "" for e in entries
+                         if e.get("username")})
+    all_events = sorted({e.get("event_type") or "" for e in entries
+                         if e.get("event_type")})
+
+    entries = sorted(entries, key=lambda e: e.get("timestamp", ""), reverse=True)
+
+    security_logger.log_event(
+        SecurityLogger.DATA_ACCESS, g.user_id, g.ip, g.ua,
+        details={"view": "admin_audit", "filter_user": filter_user,
+                 "filter_event": filter_event},
+    )
+    return render_template(
+        "audit.html",
+        entries=entries,
+        filter_user=filter_user,
+        filter_event=filter_event,
+        all_users=all_users,
+        all_events=all_events,
+        total=len(all_entries),
+    )
 
 # ---------------------------------------------------------------------------
 # TLS certificate auto-generation

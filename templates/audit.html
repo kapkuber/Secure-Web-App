@@ -1,37 +1,85 @@
 {% extends "base.html" %}
-{% block title %}Audit Log — SecureWebApp{% endblock %}
+{% block title %}System Audit Log — SecureWebApp{% endblock %}
 {% block content %}
-<h2>Audit Log</h2>
-<p>{{ entries | length }} entries (newest first)</p>
+<h2>System Audit Log</h2>
+
+{# ---- Filter form ---- #}
+<form method="get" action="{{ url_for('audit_log') }}" class="filter-bar">
+    <label for="f-user">User</label>
+    <select id="f-user" name="user">
+        <option value="">— all users —</option>
+        {% for u in all_users %}
+        <option value="{{ u | e }}"
+                {% if u == filter_user %}selected{% endif %}>{{ u | e }}</option>
+        {% endfor %}
+    </select>
+
+    <label for="f-event">Event type</label>
+    <select id="f-event" name="event">
+        <option value="">— all events —</option>
+        {% for ev in all_events %}
+        <option value="{{ ev | e }}"
+                {% if ev == filter_event %}selected{% endif %}>{{ ev | e }}</option>
+        {% endfor %}
+    </select>
+
+    <button type="submit" class="btn btn-primary">Filter</button>
+    {% if filter_user or filter_event %}
+    <a href="{{ url_for('audit_log') }}" class="btn">Clear</a>
+    {% endif %}
+</form>
+
+<p class="muted">
+    Showing {{ entries | length }}
+    {% if total is defined and (filter_user or filter_event) %}
+        of {{ total }}
+    {% endif %}
+    event(s), newest first
+</p>
+
+{% if entries %}
 <table class="doc-table">
     <thead>
         <tr>
             <th>Timestamp</th>
             <th>Event</th>
-            <th>Username</th>
+            <th>User</th>
             <th>Document</th>
             <th>IP</th>
             <th>Details</th>
         </tr>
     </thead>
     <tbody>
-    {% for entry in entries | reverse %}
+    {% for e in entries %}
     <tr>
-        <td>{{ entry.timestamp | e }}</td>
-        <td>{{ entry.event_type | e }}</td>
-        <td>{{ entry.get('username', '—') | e }}</td>
+        <td class="mono">{{ e.timestamp | e }}</td>
         <td>
-            {% if entry.doc_id %}
-                <span class="mono">{{ entry.doc_id[:8] }}&hellip;</span>
-                {% if entry.doc_name %}&nbsp;({{ entry.doc_name | e }}){% endif %}
+            <span class="event-badge event-{{ e.event_type | lower | replace('_','-') }}">
+                {{ e.event_type | e }}
+            </span>
+        </td>
+        <td>{{ e.get('username', '—') | e }}</td>
+        <td>
+            {% if e.doc_id %}
+                {% if e.doc_name %}
+                    {{ e.doc_name | e }}
+                    <br><span class="mono small">{{ e.doc_id[:8] | e }}&hellip;</span>
+                {% else %}
+                    <span class="mono">{{ e.doc_id[:8] | e }}&hellip;</span>
+                {% endif %}
             {% else %}
                 —
             {% endif %}
         </td>
-        <td>{{ entry.ip_address | e }}</td>
-        <td class="mono">{{ entry.get('details', {}) | e }}</td>
+        <td class="mono">{{ e.ip_address | e }}</td>
+        <td class="mono small">
+            {%- if e.details -%}{{ e.details | e }}{%- else -%}—{%- endif -%}
+        </td>
     </tr>
     {% endfor %}
     </tbody>
 </table>
+{% else %}
+<p class="muted">No events match the current filter.</p>
+{% endif %}
 {% endblock %}

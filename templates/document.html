@@ -1,45 +1,87 @@
 {% extends "base.html" %}
 {% block title %}{{ doc.original_name | e }} — SecureWebApp{% endblock %}
 {% block content %}
-<div class="auth-card">
+<div class="auth-card" style="max-width:700px">
     <h2>{{ doc.original_name | e }}</h2>
     <dl class="doc-meta">
-        <dt>Uploaded</dt>     <dd>{{ doc.uploaded_at | ts_to_date }}</dd>
-        <dt>Size</dt>         <dd>{{ doc.size_bytes }} bytes</dd>
-        <dt>Type</dt>         <dd>{{ doc.mime_type | e }}</dd>
-        <dt>Version</dt>      <dd>{{ doc.current_version }}</dd>
+        <dt>Uploaded</dt>  <dd>{{ doc.uploaded_at | ts_to_date }}</dd>
+        <dt>Size</dt>      <dd>{{ doc.size_bytes }} bytes</dd>
+        <dt>Type</dt>      <dd>{{ doc.mime_type | e }}</dd>
+        <dt>Version</dt>   <dd>v{{ doc.current_version }}</dd>
+        {% if doc.get('is_deleted') %}<dt>Status</dt><dd class="danger-text">Deleted</dd>{% endif %}
     </dl>
 
-    <a href="{{ url_for('download_document', doc_id=doc_id) }}" class="btn btn-primary">
-        Download v{{ doc.current_version }}
-    </a>
-    {% if doc.owner_id == current_user_id %}
-    <a href="{{ url_for('share_document', doc_id=doc_id) }}" class="btn">Share</a>
-    <form method="post" action="{{ url_for('delete_document', doc_id=doc_id) }}"
-          style="display:inline"
-          onsubmit="return confirm('Permanently delete this document?')">
-        <button type="submit" class="btn danger">Delete</button>
-    </form>
-    {% endif %}
-    <a href="{{ url_for('dashboard') }}" class="btn">Back</a>
+    <div class="action-bar">
+        <a href="{{ url_for('download_document', doc_id=doc_id) }}" class="btn btn-primary">
+            Download v{{ doc.current_version }}
+        </a>
+        {% if is_owner %}
+            <a href="{{ url_for('share_document', doc_id=doc_id) }}" class="btn">Share</a>
+            <a href="{{ url_for('document_audit', doc_id=doc_id) }}" class="btn">Audit Trail</a>
+            {% if not doc.get('is_deleted') %}
+            <form method="post" action="{{ url_for('delete_document', doc_id=doc_id) }}"
+                  style="display:inline"
+                  onsubmit="return confirm('Permanently delete this document?')">
+                <button type="submit" class="btn danger">Delete</button>
+            </form>
+            {% endif %}
+        {% elif current_user and current_user.role == 'admin' %}
+            <a href="{{ url_for('document_audit', doc_id=doc_id) }}" class="btn">Audit Trail</a>
+        {% endif %}
+        <a href="{{ url_for('dashboard') }}" class="btn">Back</a>
+    </div>
 </div>
 
+{# ---- Active shares (owner only) ---- #}
+{% if is_owner %}
+<h3>Active Shares</h3>
+{% if doc_shares %}
+<table class="doc-table">
+    <thead><tr><th>User</th><th>Role</th><th>Shared</th><th>Action</th></tr></thead>
+    <tbody>
+    {% for share in doc_shares %}
+    <tr>
+        <td>{{ share.username | e }}</td>
+        <td><span class="badge">{{ share.role }}</span></td>
+        <td>{{ share.created_at | ts_to_date }}</td>
+        <td>
+            <form method="post"
+                  action="{{ url_for('revoke_share', doc_id=doc_id, share_id=share.share_id) }}"
+                  onsubmit="return confirm('Revoke access for {{ share.username | e }}?')">
+                <button type="submit" class="btn-link danger">Revoke</button>
+            </form>
+        </td>
+    </tr>
+    {% endfor %}
+    </tbody>
+</table>
+{% else %}
+<p class="muted">This document is not shared with anyone.</p>
+{% endif %}
+{% endif %}
+
+{# ---- Version history ---- #}
 <h3>Version History</h3>
 <table class="doc-table">
-    <thead><tr><th>Version</th><th>Uploaded</th><th>Size</th><th>Uploaded By</th></tr></thead>
+    <thead><tr><th>Version</th><th>Uploaded</th><th>Size</th></tr></thead>
     <tbody>
     {% for v in doc.versions | sort(attribute='version', reverse=True) %}
     <tr {% if v.version == doc.current_version %}class="current-version"{% endif %}>
-        <td>v{{ v.version }}{% if v.version == doc.current_version %} <span class="badge">current</span>{% endif %}</td>
+        <td>
+            v{{ v.version }}
+            {% if v.version == doc.current_version %}
+                <span class="badge">current</span>
+            {% endif %}
+        </td>
         <td>{{ v.uploaded_at | ts_to_date }}</td>
         <td>{{ v.size_bytes }} B</td>
-        <td class="mono">{{ v.uploaded_by[:8] }}&hellip;</td>
     </tr>
     {% endfor %}
     </tbody>
 </table>
 
-{% if can_edit %}
+{# ---- Upload new version (owner or editor) ---- #}
+{% if can_edit and not doc.get('is_deleted') %}
 <h3>Upload New Version</h3>
 <form method="post" action="{{ url_for('upload_version', doc_id=doc_id) }}"
       enctype="multipart/form-data" class="auth-card" style="max-width:100%">
