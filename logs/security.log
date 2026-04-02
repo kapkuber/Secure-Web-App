@@ -1,1 +1,0 @@
-2026-04-02 17:11:31,497 - INFO - {"timestamp": "2026-04-02T21:11:31.497280", "event_type": "REGISTER_SUCCESS", "user_id": "13d8ea5a-99d5-491e-b6d8-ed20cff3c352", "ip": "127.0.0.1", "user_agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/146.0.0.0 Safari/537.36", "details": {"username": "admin", "role": "admin"}}
