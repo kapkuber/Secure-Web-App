@@ -1,27 +1,20 @@
-# Secrets & keys
 secret.key
 
-# TLS certificates
 certs/
 
-# Runtime data (never commit)
 data/
 logs/
 uploads/
 
-# Python
 __pycache__/
 *.pyc
 *.pyo
 
-# Virtual environments
 venv/
 env/
 .venv/
 
-# Environment files
 .env
 
-# IDE / tools
 .claude/
 .pytest_cache/
