@@ -2,7 +2,6 @@ import os
 import time
 import uuid
 import hashlib
-import subprocess
 from datetime import datetime
 from pathlib import Path
 
@@ -952,39 +951,74 @@ def audit_log():
     )
 
 # ---------------------------------------------------------------------------
-# TLS certificate auto-generation
+# TLS certificate auto-generation (pure Python via cryptography library)
 # ---------------------------------------------------------------------------
 
-def ensure_tls_cert() -> None:
+def ensure_tls_cert() -> tuple[str, str] | None:
+    """Generate a self-signed cert using the cryptography library.
+
+    Returns (cert_path, key_path) on success, None if unavailable.
+    """
     cert_dir = BASE_DIR / app.config["CERT_FOLDER"]
-    cert = cert_dir / "cert.pem"
-    key  = cert_dir / "key.pem"
-    if cert.exists() and key.exists():
-        return
-    cert_dir.mkdir(parents=True, exist_ok=True)
-    subprocess.run(
-        [
-            "openssl", "req", "-x509", "-newkey", "rsa:4096", "-nodes",
-            "-out",    str(cert),
-            "-keyout", str(key),
-            "-days",   "365",
-            "-subj",   "/CN=localhost",
-        ],
-        check=True,
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
-    )
+    cert_path = cert_dir / "cert.pem"
+    key_path  = cert_dir / "key.pem"
+    if cert_path.exists() and key_path.exists():
+        return str(cert_path), str(key_path)
+
+    try:
+        from cryptography import x509
+        from cryptography.x509.oid import NameOID
+        from cryptography.hazmat.primitives import hashes, serialization
+        from cryptography.hazmat.primitives.asymmetric import rsa
+        import datetime as _dt
+
+        cert_dir.mkdir(parents=True, exist_ok=True)
+
+        private_key = rsa.generate_private_key(
+            public_exponent=65537,
+            key_size=2048,
+        )
+        subject = issuer = x509.Name([
+            x509.NameAttribute(NameOID.COMMON_NAME, "localhost"),
+        ])
+        cert = (
+            x509.CertificateBuilder()
+            .subject_name(subject)
+            .issuer_name(issuer)
+            .public_key(private_key.public_key())
+            .serial_number(x509.random_serial_number())
+            .not_valid_before(_dt.datetime.now(_dt.timezone.utc))
+            .not_valid_after(_dt.datetime.now(_dt.timezone.utc) + _dt.timedelta(days=365))
+            .add_extension(
+                x509.SubjectAlternativeName([x509.DNSName("localhost")]),
+                critical=False,
+            )
+            .sign(private_key, hashes.SHA256())
+        )
+
+        key_path.write_bytes(
+            private_key.private_bytes(
+                encoding=serialization.Encoding.PEM,
+                format=serialization.PrivateFormat.TraditionalOpenSSL,
+                encryption_algorithm=serialization.NoEncryption(),
+            )
+        )
+        cert_path.write_bytes(cert.public_bytes(serialization.Encoding.PEM))
+        return str(cert_path), str(key_path)
+
+    except Exception as exc:
+        print(f"[WARNING] Could not generate TLS cert: {exc}. Running over HTTP.")
+        return None
 
 # ---------------------------------------------------------------------------
 # Entry point
 # ---------------------------------------------------------------------------
 
 if __name__ == "__main__":
-    ensure_tls_cert()
-    cert_dir = BASE_DIR / app.config["CERT_FOLDER"]
+    tls = ensure_tls_cert()
     app.run(
         host="127.0.0.1",
         port=5000,
-        ssl_context=(str(cert_dir / "cert.pem"), str(cert_dir / "key.pem")),
+        ssl_context=tls if tls else None,
         debug=False,
     )
