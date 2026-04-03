@@ -299,10 +299,6 @@ class SessionManager:
             "user_agent":    user_agent,
         }
         self._save(sessions)
-        self._logger.log_event(
-            SecurityLogger.SESSION_CREATED, user_id, ip, user_agent,
-            details={"token_prefix": token[:8]},
-        )
         return token
 
     def validate_session(self, token: str) -> dict | None:
@@ -330,15 +326,8 @@ class SessionManager:
         if not token:
             return
         sessions = self._load()
-        sess = sessions.pop(token, None)
+        sessions.pop(token, None)
         self._save(sessions)
-        if sess:
-            self._logger.log_event(
-                SecurityLogger.SESSION_DESTROYED,
-                sess.get("user_id"), sess.get("ip_address", ""),
-                sess.get("user_agent", ""),
-                details={"token_prefix": token[:8]},
-            )
 
     def cleanup_expired(self) -> None:
         sessions = self._load()

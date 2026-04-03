@@ -503,10 +503,6 @@ def dashboard():
         if k in shared_doc_ids and not v.get("is_deleted")
     }
 
-    security_logger.log_event(
-        SecurityLogger.DATA_ACCESS, user_id, g.ip, g.ua,
-        details={"view": "dashboard"},
-    )
     return render_template("dashboard.html", own_docs=own_docs, shared_docs=shared_docs)
 
 # ---------------------------------------------------------------------------
@@ -694,12 +690,7 @@ def view_document(doc_id):
                 })
         doc_shares.sort(key=lambda s: s["created_at"], reverse=True)
 
-    security_logger.log_event(
-        SecurityLogger.DATA_ACCESS, g.user_id, g.ip, g.ua,
-        details={"doc_id": doc_id},
-    )
-    audit("DATA_ACCESS", doc_id=doc_id, doc_name=doc["original_name"])
-    return render_template("document.html", doc=doc, doc_id=doc_id,
+        return render_template("document.html", doc=doc, doc_id=doc_id,
                            can_edit=can_edit, is_owner=is_owner,
                            doc_shares=doc_shares)
 
@@ -887,10 +878,6 @@ def document_audit(doc_id):
     entries = [e for e in load_audit() if e.get("doc_id") == doc_id]
     entries.sort(key=lambda e: e.get("timestamp", ""), reverse=True)
 
-    security_logger.log_event(
-        SecurityLogger.DATA_ACCESS, g.user_id, g.ip, g.ua,
-        details={"doc_id": doc_id, "view": "document_audit"},
-    )
     return render_template("document_audit.html", doc=doc, doc_id=doc_id,
                            entries=entries)
 
@@ -901,14 +888,13 @@ def document_audit(doc_id):
 @app.route("/admin")
 @require_role("admin")
 def admin_panel():
-    security_logger.log_event(
-        SecurityLogger.DATA_ACCESS, g.user_id, g.ip, g.ua,
-        details={"view": "admin_panel"},
-    )
+    all_audit = load_audit()
+    all_audit.sort(key=lambda e: e.get("timestamp", ""), reverse=True)
     return render_template("admin.html",
                            users=load_users(),
                            docs=load_docs(),
-                           shares=load_shares())
+                           shares=load_shares(),
+                           recent_audit=all_audit[:20])
 
 @app.route("/admin/audit")
 @require_role("admin")
@@ -935,11 +921,6 @@ def audit_log():
 
     entries = sorted(entries, key=lambda e: e.get("timestamp", ""), reverse=True)
 
-    security_logger.log_event(
-        SecurityLogger.DATA_ACCESS, g.user_id, g.ip, g.ua,
-        details={"view": "admin_audit", "filter_user": filter_user,
-                 "filter_event": filter_event},
-    )
     return render_template(
         "audit.html",
         entries=entries,
