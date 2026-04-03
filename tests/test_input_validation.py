@@ -144,3 +144,69 @@ class TestFormInputs:
             }, follow_redirects=True)
             assert r.status_code == 200
             assert b"<script" not in r.data
+
+
+class TestFileUploadIntegration:
+    @pytest.fixture(autouse=True)
+    def setup(self, tmp_path):
+        for name, content in (
+            ("users.json", {}), ("sessions.json", {}),
+            ("documents.json", {}), ("shares.json", {}), ("audit.json", []),
+        ):
+            (tmp_path / name).write_text(json.dumps(content))
+        app.config.update({
+            "TESTING":               True,
+            "SESSION_COOKIE_SECURE": False,
+            "DATA_FOLDER":           str(tmp_path),
+            "UPLOAD_FOLDER":         str(tmp_path),
+        })
+        self.tmp_path = tmp_path
+
+    def _login(self, c):
+        c.post("/register", data={
+            "username":         "uploader",
+            "email":            "up@test.com",
+            "password":         "Str0ng!Password#1",
+            "confirm_password": "Str0ng!Password#1",
+        })
+        c.post("/login", data={"username": "uploader", "password": "Str0ng!Password#1"})
+
+    def test_xss_in_filename(self):
+        with app.test_client() as c:
+            self._login(c)
+            c.post("/upload",
+                   data={"file": (io.BytesIO(b"content"), "<script>alert(1)</script>.pdf")},
+                   content_type="multipart/form-data")
+        docs = json.loads((self.tmp_path / "documents.json").read_text())
+        for doc in docs.values():
+            assert "<script>" not in doc["original_name"]
+
+    def test_path_traversal_in_filename(self):
+        from security import safe_filename
+        with pytest.raises(ValueError):
+            safe_filename("../../etc/passwd", {"pdf", "txt"})
+
+    def test_path_traversal_in_download(self):
+        with app.test_client() as c:
+            self._login(c)
+            r = c.get("/document/../secret", follow_redirects=False)
+            assert r.status_code in (301, 302, 404, 400)
+
+    def test_file_extension_whitelist(self):
+        with app.test_client() as c:
+            self._login(c)
+            r = c.post("/upload",
+                       data={"file": (io.BytesIO(b"MZ\x90\x00"), "malware.exe")},
+                       content_type="multipart/form-data",
+                       follow_redirects=True)
+            assert r.status_code == 200
+            assert b"rejected" in r.data.lower() or b"not allowed" in r.data.lower()
+
+    def test_oversized_file(self):
+        with app.test_client() as c:
+            self._login(c)
+            big = io.BytesIO(b"x" * (16 * 1024 * 1024 + 1))
+            r = c.post("/upload",
+                       data={"file": (big, "big.txt")},
+                       content_type="multipart/form-data")
+            assert r.status_code in (413, 200, 302)

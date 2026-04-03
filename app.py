@@ -212,6 +212,13 @@ def inject_user():
 
 @app.before_request
 def before_request() -> None:
+    # Force HTTPS in production
+    if (not app.config.get("TESTING")
+            and app.config.get("ENV") != "development"
+            and not request.is_secure):
+        url = request.url.replace("http://", "https://", 1)
+        return redirect(url, code=301)
+
     # Keep session path in sync with DATA_FOLDER so test fixtures work.
     session_manager._file = _data("sessions.json")
     session_manager.cleanup_expired()
@@ -690,7 +697,7 @@ def view_document(doc_id):
                 })
         doc_shares.sort(key=lambda s: s["created_at"], reverse=True)
 
-        return render_template("document.html", doc=doc, doc_id=doc_id,
+    return render_template("document.html", doc=doc, doc_id=doc_id,
                            can_edit=can_edit, is_owner=is_owner,
                            doc_shares=doc_shares)
 
@@ -992,13 +999,41 @@ def ensure_tls_cert() -> tuple[str, str] | None:
         return None
 
 # ---------------------------------------------------------------------------
+# First-run initialisation
+# ---------------------------------------------------------------------------
+
+def initialize_app() -> None:
+    """Create required directories and seed empty data/log files on first run."""
+    import json
+
+    for directory in ["data", "logs", "uploads", "certs", "static/css", "static/js", "templates"]:
+        os.makedirs(directory, exist_ok=True)
+
+    json_files = {
+        "data/users.json":    {},
+        "data/sessions.json": {},
+        "data/documents.json": {},
+        "data/shares.json":   {},
+        "data/audit.json":    [],
+    }
+    for filepath, default in json_files.items():
+        if not os.path.exists(filepath) or os.path.getsize(filepath) == 0:
+            with open(filepath, "w") as f:
+                json.dump(default, f)
+
+    for log_file in ["logs/security.log", "logs/access.log"]:
+        if not os.path.exists(log_file):
+            open(log_file, "a").close()
+
+# ---------------------------------------------------------------------------
 # Entry point
 # ---------------------------------------------------------------------------
 
 if __name__ == "__main__":
+    initialize_app()
     tls = ensure_tls_cert()
     app.run(
-        host="127.0.0.1",
+        host="0.0.0.0",
         port=5000,
         ssl_context=tls if tls else None,
         debug=False,

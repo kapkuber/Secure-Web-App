@@ -180,6 +180,24 @@ class TestSessionIntegration:
             }, follow_redirects=True)
             assert b"disabled" in r.data.lower()
 
+    def test_invalid_token_rejected(self, env):
+        with app.test_client() as c:
+            c.set_cookie("session_token", "completely-invalid-token-value-xyz")
+            r = c.get("/dashboard", follow_redirects=True)
+            assert b"login" in r.data.lower()
+
+    def test_concurrent_sessions(self, env):
+        with app.test_client() as c1:
+            c1.post("/login", data={
+                "username": "sessionuser", "password": "Str0ng!Password#1",
+            })
+        with app.test_client() as c2:
+            c2.post("/login", data={
+                "username": "sessionuser", "password": "Str0ng!Password#1",
+            })
+        sessions = json.loads((env["tmp_path"] / "sessions.json").read_text())
+        assert len(sessions) == 2
+
     def test_cookie_config(self, env):
         assert app.config["SESSION_COOKIE_HTTPONLY"] is True
         assert app.config["SESSION_COOKIE_SAMESITE"] == "Lax"

@@ -146,6 +146,21 @@ class TestLogin:
         r = login(client, password="Str0ng!Password#1")
         assert b"minute" in r.data.lower()
 
+    def test_login_rate_limit(self, client):
+        from app import rate_limiter
+        rate_limiter._store.clear()
+        app.config.update({"TESTING": False, "ENV": "development"})
+        try:
+            r = None
+            for _ in range(11):
+                r = client.post("/login", data={
+                    "username": "nobody", "password": "anything",
+                }, follow_redirects=True)
+            assert r.status_code == 429 or b"too many" in r.data.lower()
+        finally:
+            app.config.update({"TESTING": True, "ENV": "production"})
+            rate_limiter._store.clear()
+
     def test_disabled_account_message(self, tmp_path, client):
         register(client)
         users = json.loads((tmp_path / "users.json").read_text())

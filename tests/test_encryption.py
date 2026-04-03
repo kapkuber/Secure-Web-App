@@ -46,6 +46,12 @@ class TestEncryptDecrypt:
         with pytest.raises(Exception):
             store.decrypt_file(tampered)
 
+    def test_encrypted_file_not_readable_as_plaintext(self, store):
+        plaintext = b"sensitive document content"
+        ct = store.encrypt_file(plaintext)
+        assert plaintext not in ct
+        assert b"sensitive" not in ct
+
     def test_wrong_key_raises(self, tmp_path):
         s1 = EncryptedStorage(str(tmp_path / "key1.key"))
         s2 = EncryptedStorage(str(tmp_path / "key2.key"))
@@ -105,3 +111,40 @@ class TestSaveLoadEncryptedJson:
     def test_load_missing_returns_default(self, store, tmp_path):
         result = store.load_encrypted_json(str(tmp_path / "no.json"), default={})
         assert result == {}
+
+
+class TestUploadIntegration:
+    def test_uploaded_file_stored_encrypted(self, tmp_path):
+        import io
+        import json
+        from app import app
+
+        for name, content in (
+            ("users.json", {}), ("sessions.json", {}),
+            ("documents.json", {}), ("shares.json", {}), ("audit.json", []),
+        ):
+            (tmp_path / name).write_text(json.dumps(content))
+
+        app.config.update({
+            "TESTING":              True,
+            "SESSION_COOKIE_SECURE": False,
+            "DATA_FOLDER":          str(tmp_path),
+            "UPLOAD_FOLDER":        str(tmp_path),
+        })
+
+        original = b"This is sensitive document content"
+        with app.test_client() as c:
+            c.post("/register", data={
+                "username":         "tester",
+                "email":            "t@example.com",
+                "password":         "Str0ng!Password#1",
+                "confirm_password": "Str0ng!Password#1",
+            })
+            c.post("/login", data={"username": "tester", "password": "Str0ng!Password#1"})
+            c.post("/upload",
+                   data={"file": (io.BytesIO(original), "test.txt")},
+                   content_type="multipart/form-data")
+
+        enc_files = list(tmp_path.glob("*.enc"))
+        assert len(enc_files) == 1
+        assert original not in enc_files[0].read_bytes()
