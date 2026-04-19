@@ -281,10 +281,10 @@ class SessionManager:
         self._logger  = logger
 
     def _load(self) -> dict:
-        return self._storage.load_json(self._file, default={})
+        return self._storage.load_encrypted_json(self._file, default={})
 
     def _save(self, sessions: dict) -> None:
-        self._storage.save_json(self._file, sessions)
+        self._storage.save_encrypted_json(self._file, sessions)
 
     def create_session(self, user_id: str, ip: str, user_agent: str) -> str:
         token    = secrets.token_urlsafe(32)
@@ -301,6 +301,8 @@ class SessionManager:
         self._save(sessions)
         return token
 
+    _MAX_SESSION_AGE = 8 * 3600  # 8-hour absolute lifetime regardless of activity
+
     def validate_session(self, token: str) -> dict | None:
         if not token:
             return None
@@ -308,16 +310,21 @@ class SessionManager:
         sess = sessions.get(token)
         if not sess:
             return None
-        if time.time() - sess.get("last_activity", 0) > self._timeout:
-            self.destroy_session(token)
+        now = time.time()
+        idle_expired = now - sess.get("last_activity", 0) > self._timeout
+        abs_expired  = now - sess.get("created_at", now) > self._MAX_SESSION_AGE
+        if idle_expired or abs_expired:
+            sessions.pop(token, None)
+            self._save(sessions)
             self._logger.log_event(
                 SecurityLogger.SESSION_EXPIRED,
                 sess.get("user_id"), sess.get("ip_address", ""),
                 sess.get("user_agent", ""),
-                details={"token_prefix": token[:8]},
+                details={"token_prefix": token[:8],
+                         "reason": "absolute_limit" if abs_expired else "idle"},
             )
             return None
-        sess["last_activity"] = time.time()
+        sess["last_activity"] = now
         sessions[token] = sess
         self._save(sessions)
         return sess
@@ -331,9 +338,14 @@ class SessionManager:
 
     def cleanup_expired(self) -> None:
         sessions = self._load()
-        cutoff   = time.time() - self._timeout
-        expired  = [t for t, s in sessions.items()
-                    if s.get("last_activity", 0) < cutoff]
+        now      = time.time()
+        idle_cut = now - self._timeout
+        abs_cut  = now - self._MAX_SESSION_AGE
+        expired  = [
+            t for t, s in sessions.items()
+            if s.get("last_activity", 0) < idle_cut
+            or s.get("created_at", 0) < abs_cut
+        ]
         if expired:
             for t in expired:
                 sessions.pop(t, None)

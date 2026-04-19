@@ -2,8 +2,10 @@ import os
 import time
 import uuid
 import hashlib
+import logging
 from datetime import datetime
 from pathlib import Path
+from urllib.parse import quote
 
 import bcrypt
 from flask import (
@@ -78,14 +80,43 @@ def _upload_dir() -> Path:
 # Data store helpers
 # ---------------------------------------------------------------------------
 
-def load_users():    return storage.load_json(_data("users.json"),     default={})
-def save_users(d):   storage.save_json(_data("users.json"),     d)
-def load_docs():     return storage.load_json(_data("documents.json"), default={})
-def save_docs(d):    storage.save_json(_data("documents.json"), d)
-def load_shares():   return storage.load_json(_data("shares.json"),    default={})
-def save_shares(d):  storage.save_json(_data("shares.json"),    d)
-def load_audit():    return storage.load_json(_data("audit.json"),     default=[])
-def save_audit(d):   storage.save_json(_data("audit.json"),     d)
+def load_users():    return storage.load_encrypted_json(_data("users.json"),     default={})
+def save_users(d):   storage.save_encrypted_json(_data("users.json"),     d)
+def load_docs():     return storage.load_encrypted_json(_data("documents.json"), default={})
+def save_docs(d):    storage.save_encrypted_json(_data("documents.json"), d)
+def load_shares():   return storage.load_encrypted_json(_data("shares.json"),    default={})
+def save_shares(d):  storage.save_encrypted_json(_data("shares.json"),    d)
+def load_audit():    return storage.load_encrypted_json(_data("audit.json"),     default=[])
+def save_audit(d):   storage.save_encrypted_json(_data("audit.json"),     d)
+
+def _migrate_plaintext_json_to_encrypted() -> None:
+    """One-time migration: re-encrypt any data files still stored as plaintext JSON."""
+    import json as _json
+    files_and_defaults = [
+        ("users.json",     {}),
+        ("documents.json", {}),
+        ("shares.json",    {}),
+        ("sessions.json",  {}),
+        ("audit.json",     []),
+    ]
+    for filename, default in files_and_defaults:
+        path = Path(_data(filename))
+        if not path.exists() or path.stat().st_size == 0:
+            continue
+        raw = path.read_bytes()
+        try:
+            storage._fernet.decrypt(raw)
+            continue  # already encrypted
+        except Exception:
+            pass
+        try:
+            data = _json.loads(raw.decode("utf-8"))
+            storage.save_encrypted_json(str(path), data)
+            logging.getLogger("security").info("Migrated %s to encrypted storage", filename)
+        except Exception as exc:
+            logging.getLogger("security").error("Migration failed for %s: %s", filename, exc)
+
+_migrate_plaintext_json_to_encrypted()
 
 # ---------------------------------------------------------------------------
 # Audit helper
@@ -243,7 +274,7 @@ def before_request() -> None:
 def set_security_headers(response):
     response.headers["Content-Security-Policy"] = (
         "default-src 'self'; "
-        "script-src 'self' 'unsafe-inline'; "
+        "script-src 'self'; "
         "style-src 'self' 'unsafe-inline'; "
         "img-src 'self' data:; "
         "font-src 'self'; "
@@ -462,13 +493,7 @@ def login():
         audit("LOGIN_SUCCESS")
 
         response = make_response(redirect("/dashboard"))
-        response.set_cookie(
-            "session_token", token,
-            httponly=True,
-            secure=not app.config.get("TESTING", False),
-            samesite="Strict",
-            max_age=app.config["SESSION_TIMEOUT"],
-        )
+        response.set_cookie("session_token", token, **_cookie_kwargs())
         return response
 
     return render_template("login.html")
@@ -735,7 +760,7 @@ def download_document(doc_id):
     return Response(
         plain,
         headers={
-            "Content-Disposition": f'attachment; filename="{doc["original_name"]}"',
+            "Content-Disposition": f"attachment; filename*=UTF-8''{quote(doc['original_name'], safe='')}",
             "Content-Type": doc.get("mime_type", "application/octet-stream"),
         },
     )
