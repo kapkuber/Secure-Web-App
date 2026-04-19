@@ -14,7 +14,15 @@
         <td class="mono">{{ uid[:8] }}&hellip;</td>
         <td>{{ u.username | e }}</td>
         <td>{{ u.get('email', '—') | e }}</td>
-        <td>{{ u.role }}</td>
+        <td>
+            {% if u.role == 'admin' %}
+                <span class="badge" style="background:#c0392b;color:#fff">admin</span>
+            {% elif u.role == 'guest' %}
+                <span class="badge" style="background:#7f8c8d;color:#fff">guest</span>
+            {% else %}
+                <span class="badge">user</span>
+            {% endif %}
+        </td>
         <td>{{ u.created_at | ts_to_date }}</td>
         <td>{{ u.last_login | ts_to_date }}</td>
         <td>{{ 'Yes' if u.get('is_active', True) else 'No' }}</td>
@@ -23,6 +31,21 @@
     {% endfor %}
     </tbody>
 </table>
+
+<h3>Create Guest Account</h3>
+<form method="post" action="{{ url_for('admin_create_guest') }}" class="auth-card" style="max-width:420px">
+    <div class="form-group">
+        <label for="guest_username">Username</label>
+        <input type="text" id="guest_username" name="username" required
+               minlength="3" maxlength="20" pattern="[a-zA-Z0-9_]+"
+               placeholder="3–20 alphanumeric / underscore">
+    </div>
+    <div class="form-group">
+        <label for="guest_password">Password</label>
+        <input type="password" id="guest_password" name="password" required>
+    </div>
+    <button type="submit" class="btn btn-primary">Create Guest</button>
+</form>
 
 <h3>Documents ({{ docs | length }})</h3>
 <table class="doc-table">

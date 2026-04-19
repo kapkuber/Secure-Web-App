@@ -116,14 +116,17 @@ class TestSaveLoadEncryptedJson:
 class TestUploadIntegration:
     def test_uploaded_file_stored_encrypted(self, tmp_path):
         import io
-        import json
+        import sys
+        import os
+        sys.path.insert(0, os.path.join(os.path.dirname(__file__)))
+        from helpers import write_json
         from app import app
 
         for name, content in (
             ("users.json", {}), ("sessions.json", {}),
             ("documents.json", {}), ("shares.json", {}), ("audit.json", []),
         ):
-            (tmp_path / name).write_text(json.dumps(content))
+            write_json(tmp_path / name, content)
 
         app.config.update({
             "TESTING":              True,

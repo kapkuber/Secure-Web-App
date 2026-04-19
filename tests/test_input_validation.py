@@ -1,8 +1,8 @@
 """Tests for input validation and path-safety functions in security.py."""
 import io
-import json
 import pytest
 from app import app
+from helpers import write_json, read_json
 from security import (
     validate_username, validate_email, validate_password,
     sanitize_input, safe_filename, safe_file_path,
@@ -113,7 +113,7 @@ class TestFormInputs:
             ("documents.json", {}), ("shares.json", {}),
             ("audit.json", []),
         ):
-            (tmp_path / name).write_text(json.dumps(content))
+            write_json(tmp_path / name, content)
         app.config.update({
             "TESTING": True,
             "SESSION_COOKIE_SECURE": False,
@@ -153,7 +153,7 @@ class TestFileUploadIntegration:
             ("users.json", {}), ("sessions.json", {}),
             ("documents.json", {}), ("shares.json", {}), ("audit.json", []),
         ):
-            (tmp_path / name).write_text(json.dumps(content))
+            write_json(tmp_path / name, content)
         app.config.update({
             "TESTING":               True,
             "SESSION_COOKIE_SECURE": False,
@@ -177,7 +177,7 @@ class TestFileUploadIntegration:
             c.post("/upload",
                    data={"file": (io.BytesIO(b"content"), "<script>alert(1)</script>.pdf")},
                    content_type="multipart/form-data")
-        docs = json.loads((self.tmp_path / "documents.json").read_text())
+        docs = read_json(self.tmp_path / "documents.json")
         for doc in docs.values():
             assert "<script>" not in doc["original_name"]
 

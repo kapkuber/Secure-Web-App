@@ -2,6 +2,7 @@
 {% block title %}Dashboard — SecureWebApp{% endblock %}
 {% block content %}
 <h2>Your Documents</h2>
+{% if current_user.role != 'guest' %}
 <a href="{{ url_for('upload') }}" class="btn btn-primary">Upload New</a>
 
 {% if own_docs %}
@@ -32,6 +33,7 @@
 {% else %}
 <p>No documents yet.</p>
 {% endif %}
+{% endif %}{# end non-guest block #}
 
 <h2>Shared With You</h2>
 {% if shared_docs %}

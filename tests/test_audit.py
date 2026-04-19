@@ -5,11 +5,11 @@ Tests for the audit trail system:
 - Admin system audit route with user/event filters
 - Share revocation writes SHARE_REVOKED audit entry
 """
-import json
 import time
 import uuid
 import pytest
 from app import app, hash_password
+from helpers import write_json, read_json
 
 
 # ---------------------------------------------------------------------------
@@ -84,14 +84,12 @@ def env(tmp_path):
     bob_id,   bob   = _make_user("bob",   "Str0ng!Password#2")
     admin_id, admin = _make_user("admin", "Str0ng!Admin#123", role="admin")
 
-    (tmp_path / "users.json").write_text(
-        json.dumps({alice_id: alice, bob_id: bob, admin_id: admin})
-    )
+    write_json(tmp_path / "users.json", {alice_id: alice, bob_id: bob, admin_id: admin})
     for name, content in (
         ("sessions.json", {}), ("documents.json", {}),
         ("shares.json", {}),   ("audit.json", []),
     ):
-        (tmp_path / name).write_text(json.dumps(content))
+        write_json(tmp_path / name, content)
 
     app.config.update({
         "TESTING": True,
@@ -122,7 +120,7 @@ class TestAuditSchema:
                 "username": "newuser", "email": "new@example.com",
                 "password": "Str0ng!Pass#1", "confirm_password": "Str0ng!Pass#1",
             })
-        entries = json.loads((tmp_path / "audit.json").read_text())
+        entries = read_json(tmp_path / "audit.json", default=[])
         assert len(entries) >= 1
         entry = entries[-1]
         for field in ("audit_id", "timestamp", "event_type", "user_id",
@@ -134,7 +132,7 @@ class TestAuditSchema:
             c.post("/login", data={
                 "username": "alice", "password": "Str0ng!Password#1",
             })
-        entries = json.loads((tmp_path / "audit.json").read_text())
+        entries = read_json(tmp_path / "audit.json", default=[])
         login_entries = [e for e in entries if e["event_type"] == "LOGIN_SUCCESS"]
         assert len(login_entries) >= 1
 
@@ -143,9 +141,8 @@ class TestAuditSchema:
             c.post("/login", data={
                 "username": "alice", "password": "Str0ng!Password#1",
             })
-        entries = json.loads((tmp_path / "audit.json").read_text())
+        entries = read_json(tmp_path / "audit.json", default=[])
         ts = entries[-1]["timestamp"]
-        # Must match ISO8601 with milliseconds and Z suffix
         assert "T" in ts and ts.endswith("Z")
         assert len(ts) >= 20
 
@@ -157,15 +154,13 @@ class TestAuditSchema:
 class TestDocumentAuditRoute:
     def _setup_doc(self, env):
         doc_id, doc = _make_doc(env["alice_id"])
-        (env["tmp_path"] / "documents.json").write_text(
-            json.dumps({doc_id: doc})
-        )
+        write_json(env["tmp_path"] / "documents.json", {doc_id: doc})
         entries = [
             _make_audit_entry("FILE_UPLOAD",   "alice", doc_id, doc["original_name"]),
             _make_audit_entry("FILE_DOWNLOAD", "bob",   doc_id, doc["original_name"]),
-            _make_audit_entry("LOGIN_SUCCESS", "alice", None,   None),  # unrelated
+            _make_audit_entry("LOGIN_SUCCESS", "alice", None,   None),
         ]
-        (env["tmp_path"] / "audit.json").write_text(json.dumps(entries))
+        write_json(env["tmp_path"] / "audit.json", entries)
         return doc_id
 
     def test_owner_can_view_doc_audit(self, env):
@@ -196,21 +191,18 @@ class TestDocumentAuditRoute:
         with app.test_client() as c:
             login_as(c, "alice", env["alice_pass"])
             r = c.get(f"/document/{doc_id}/audit")
-        # LOGIN_SUCCESS (no doc_id) must not appear
         assert b"LOGIN_SUCCESS" not in r.data
 
     def test_entries_sorted_newest_first(self, env):
         doc_id, doc = _make_doc(env["alice_id"])
-        (env["tmp_path"] / "documents.json").write_text(
-            json.dumps({doc_id: doc})
-        )
+        write_json(env["tmp_path"] / "documents.json", {doc_id: doc})
         entries = [
             {**_make_audit_entry("FILE_UPLOAD",   "alice", doc_id, doc["original_name"]),
              "timestamp": "2024-01-01T10:00:00.000Z"},
             {**_make_audit_entry("FILE_DOWNLOAD", "alice", doc_id, doc["original_name"]),
              "timestamp": "2024-01-02T10:00:00.000Z"},
         ]
-        (env["tmp_path"] / "audit.json").write_text(json.dumps(entries))
+        write_json(env["tmp_path"] / "audit.json", entries)
         with app.test_client() as c:
             login_as(c, "alice", env["alice_pass"])
             r = c.get(f"/document/{doc_id}/audit")
@@ -225,12 +217,9 @@ class TestDocumentAuditRoute:
 
     def test_deleted_doc_still_accessible_to_owner(self, env):
         doc_id, doc = _make_doc(env["alice_id"], deleted=True)
-        (env["tmp_path"] / "documents.json").write_text(
-            json.dumps({doc_id: doc})
-        )
-        (env["tmp_path"] / "audit.json").write_text(
-            json.dumps([_make_audit_entry("FILE_DELETE", "alice", doc_id)])
-        )
+        write_json(env["tmp_path"] / "documents.json", {doc_id: doc})
+        write_json(env["tmp_path"] / "audit.json",
+                   [_make_audit_entry("FILE_DELETE", "alice", doc_id)])
         with app.test_client() as c:
             login_as(c, "alice", env["alice_pass"])
             r = c.get(f"/document/{doc_id}/audit")
@@ -238,9 +227,7 @@ class TestDocumentAuditRoute:
 
     def test_unauthenticated_redirects(self, env):
         doc_id, doc = _make_doc(env["alice_id"])
-        (env["tmp_path"] / "documents.json").write_text(
-            json.dumps({doc_id: doc})
-        )
+        write_json(env["tmp_path"] / "documents.json", {doc_id: doc})
         with app.test_client() as c:
             r = c.get(f"/document/{doc_id}/audit", follow_redirects=False)
         assert r.status_code == 302
@@ -258,7 +245,7 @@ class TestAdminAuditFilter:
             _make_audit_entry("FILE_UPLOAD",   "bob",   str(uuid.uuid4()), "c.pdf"),
             _make_audit_entry("LOGIN_SUCCESS", "bob",   None,              None),
         ]
-        (env["tmp_path"] / "audit.json").write_text(json.dumps(entries))
+        write_json(env["tmp_path"] / "audit.json", entries)
 
     def test_no_filter_shows_all(self, env):
         self._seed_entries(env)
@@ -277,7 +264,6 @@ class TestAdminAuditFilter:
             r = c.get("/admin/audit?user=alice")
         assert r.status_code == 200
         assert b"alice" in r.data
-        # bob's LOGIN_SUCCESS should not appear
         assert b"LOGIN_SUCCESS" not in r.data
 
     def test_filter_by_event(self, env):
@@ -317,7 +303,6 @@ class TestAdminAuditFilter:
         with app.test_client() as c:
             login_as(c, "admin", env["admin_pass"])
             r = c.get("/admin/audit")
-        # Dropdowns should contain the known usernames and event types
         assert b"alice" in r.data
         assert b"bob"   in r.data
         assert b"FILE_UPLOAD" in r.data
@@ -332,8 +317,8 @@ class TestShareRevocationAudit:
     def test_revoke_writes_share_revoked_entry(self, env, tmp_path):
         doc_id,   doc   = _make_doc(env["alice_id"])
         share_id, share = _make_share(doc_id, env["alice_id"], env["bob_id"])
-        (tmp_path / "documents.json").write_text(json.dumps({doc_id: doc}))
-        (tmp_path / "shares.json").write_text(json.dumps({share_id: share}))
+        write_json(tmp_path / "documents.json", {doc_id: doc})
+        write_json(tmp_path / "shares.json",    {share_id: share})
 
         with app.test_client() as c:
             login_as(c, "alice", env["alice_pass"])
@@ -341,7 +326,7 @@ class TestShareRevocationAudit:
                        follow_redirects=True)
         assert r.status_code == 200
 
-        entries = json.loads((tmp_path / "audit.json").read_text())
+        entries = read_json(tmp_path / "audit.json", default=[])
         revoke_entries = [e for e in entries if e["event_type"] == "SHARE_REVOKED"]
         assert len(revoke_entries) == 1
         e = revoke_entries[0]
@@ -351,20 +336,20 @@ class TestShareRevocationAudit:
     def test_revoke_removes_share_from_store(self, env, tmp_path):
         doc_id,   doc   = _make_doc(env["alice_id"])
         share_id, share = _make_share(doc_id, env["alice_id"], env["bob_id"])
-        (tmp_path / "documents.json").write_text(json.dumps({doc_id: doc}))
-        (tmp_path / "shares.json").write_text(json.dumps({share_id: share}))
+        write_json(tmp_path / "documents.json", {doc_id: doc})
+        write_json(tmp_path / "shares.json",    {share_id: share})
 
         with app.test_client() as c:
             login_as(c, "alice", env["alice_pass"])
             c.post(f"/document/{doc_id}/share/{share_id}/revoke")
-        shares = json.loads((tmp_path / "shares.json").read_text())
+        shares = read_json(tmp_path / "shares.json")
         assert share_id not in shares
 
     def test_non_owner_cannot_revoke(self, env, tmp_path):
         doc_id,   doc   = _make_doc(env["alice_id"])
         share_id, share = _make_share(doc_id, env["alice_id"], env["bob_id"])
-        (tmp_path / "documents.json").write_text(json.dumps({doc_id: doc}))
-        (tmp_path / "shares.json").write_text(json.dumps({share_id: share}))
+        write_json(tmp_path / "documents.json", {doc_id: doc})
+        write_json(tmp_path / "shares.json",    {share_id: share})
 
         with app.test_client() as c:
             login_as(c, "bob", env["bob_pass"])

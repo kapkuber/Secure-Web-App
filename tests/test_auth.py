@@ -1,8 +1,8 @@
 """Tests for authentication: registration, login, lockout, logout."""
-import json
 import time
 import pytest
 from app import app, hash_password
+from helpers import write_json, read_json
 
 
 @pytest.fixture
@@ -11,7 +11,7 @@ def client(tmp_path):
         ("users.json", {}), ("sessions.json", {}),
         ("documents.json", {}), ("shares.json", {}), ("audit.json", []),
     ):
-        (tmp_path / name).write_text(json.dumps(content))
+        write_json(tmp_path / name, content)
 
     app.config.update({
         "TESTING": True,
@@ -78,7 +78,7 @@ class TestRegistration:
 
     def test_user_record_schema(self, tmp_path, client):
         register(client)
-        users = json.loads((tmp_path / "users.json").read_text())
+        users = read_json(tmp_path / "users.json")
         assert len(users) == 1
         u = next(iter(users.values()))
         for field in ("user_id", "username", "email", "password_hash",
@@ -110,14 +110,14 @@ class TestLogin:
     def test_failed_attempts_incremented(self, tmp_path, client):
         register(client)
         login(client, password="WrongPassword!1")
-        users = json.loads((tmp_path / "users.json").read_text())
+        users = read_json(tmp_path / "users.json")
         u = next(iter(users.values()))
         assert u["failed_attempts"] == 1
 
     def test_last_login_set_on_success(self, tmp_path, client):
         register(client)
         login(client)
-        users = json.loads((tmp_path / "users.json").read_text())
+        users = read_json(tmp_path / "users.json")
         u = next(iter(users.values()))
         assert u["last_login"] is not None
         assert isinstance(u["last_login"], float)
@@ -133,7 +133,7 @@ class TestLogin:
         register(client)
         for _ in range(5):
             login(client, password="WrongPassword!1")
-        users = json.loads((tmp_path / "users.json").read_text())
+        users = read_json(tmp_path / "users.json")
         u = next(iter(users.values()))
         assert u["locked_until"] is not None
         assert isinstance(u["locked_until"], float)
@@ -163,10 +163,10 @@ class TestLogin:
 
     def test_disabled_account_message(self, tmp_path, client):
         register(client)
-        users = json.loads((tmp_path / "users.json").read_text())
+        users = read_json(tmp_path / "users.json")
         for uid in users:
             users[uid]["is_active"] = False
-        (tmp_path / "users.json").write_text(json.dumps(users))
+        write_json(tmp_path / "users.json", users)
         r = login(client)
         assert b"disabled" in r.data.lower()
 
@@ -174,14 +174,14 @@ class TestLogin:
 class TestFirstUserAdmin:
     def test_first_registered_user_is_admin(self, tmp_path, client):
         register(client)
-        users = json.loads((tmp_path / "users.json").read_text())
+        users = read_json(tmp_path / "users.json")
         u = next(iter(users.values()))
         assert u["role"] == "admin"
 
     def test_second_user_is_not_admin(self, tmp_path, client):
         register(client)
         register(client, username="second", email="second@example.com")
-        users = json.loads((tmp_path / "users.json").read_text())
+        users = read_json(tmp_path / "users.json")
         roles = [u["role"] for u in users.values()]
         assert roles.count("admin") == 1
         assert "user" in roles

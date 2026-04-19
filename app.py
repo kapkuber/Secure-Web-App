@@ -18,7 +18,7 @@ from security import (
     EncryptedStorage, SecurityLogger, SessionManager, RateLimiter,
     validate_username, validate_email, validate_password,
     sanitize_input, safe_filename, safe_file_path, validate_file_upload,
-    require_auth, require_role,
+    require_auth, require_role, deny_guest,
 )
 
 app = Flask(__name__)
@@ -543,6 +543,7 @@ def dashboard():
 
 @app.route("/upload", methods=["GET", "POST"])
 @require_auth
+@deny_guest
 def upload():
     if request.method == "POST":
         if "file" not in request.files or not request.files["file"].filename:
@@ -624,6 +625,7 @@ def upload():
 
 @app.route("/document/<doc_id>/version", methods=["POST"])
 @require_auth
+@deny_guest
 def upload_version(doc_id):
     if not can_edit_document(g.user_id, doc_id):
         security_logger.log_event(
@@ -822,6 +824,10 @@ def share_document(doc_id):
             flash("You cannot share with yourself.")
             return render_template("share.html", doc_id=doc_id)
 
+        # Guests are always viewer-only regardless of submitted role
+        if users.get(target_id, {}).get("role") == "guest":
+            role = "viewer"
+
         share_id = str(uuid.uuid4())
         shares   = load_shares()
         shares[share_id] = {
@@ -927,6 +933,50 @@ def admin_panel():
                            docs=load_docs(),
                            shares=load_shares(),
                            recent_audit=all_audit[:20])
+
+@app.route("/admin/create-guest", methods=["POST"])
+@require_role("admin")
+def admin_create_guest():
+    username = sanitize_input(request.form.get("username", "").strip())
+    password = request.form.get("password", "")
+
+    if not validate_username(username):
+        flash("Invalid username (3–20 alphanumeric/underscore characters).")
+        return redirect(url_for("admin_panel"))
+
+    errors = validate_password(password)
+    if errors:
+        for e in errors:
+            flash(e)
+        return redirect(url_for("admin_panel"))
+
+    users = load_users()
+    if any(u["username"].lower() == username.lower() for u in users.values()):
+        flash("Username already taken.")
+        return redirect(url_for("admin_panel"))
+
+    user_id = str(uuid.uuid4())
+    users[user_id] = {
+        "user_id":         user_id,
+        "username":        username,
+        "email":           "",
+        "password_hash":   hash_password(password),
+        "role":            "guest",
+        "created_at":      time.time(),
+        "failed_attempts": 0,
+        "locked_until":    None,
+        "last_login":      None,
+        "is_active":       True,
+    }
+    save_users(users)
+    security_logger.log_event(
+        SecurityLogger.REGISTER_SUCCESS, user_id, g.ip, g.ua,
+        details={"username": username, "role": "guest"},
+    )
+    audit("GUEST_CREATED", details={"username": username})
+    flash(f"Guest account '{username}' created.")
+    return redirect(url_for("admin_panel"))
+
 
 @app.route("/admin/audit")
 @require_role("admin")

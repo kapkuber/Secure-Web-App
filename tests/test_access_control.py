@@ -1,10 +1,10 @@
 """Tests for access control: ownership, sharing roles, IDOR prevention."""
 import io
-import json
 import time
 import uuid
 import pytest
 from app import app, hash_password, storage
+from helpers import write_json, read_json
 
 
 def _make_user(username, password, role="user"):
@@ -54,15 +54,15 @@ def _make_doc(owner_id, name="secret.pdf"):
 def env(tmp_path):
     alice_id, alice = _make_user("alice", "Str0ng!Password#1")
     bob_id,   bob   = _make_user("bob",   "Str0ng!Password#2")
+    guest_id, guest = _make_user("guestuser", "Str0ng!Guest#123", role="guest")
+    guest["email"] = ""
 
-    (tmp_path / "users.json").write_text(
-        json.dumps({alice_id: alice, bob_id: bob})
-    )
+    write_json(tmp_path / "users.json", {alice_id: alice, bob_id: bob, guest_id: guest})
     for name, content in (
         ("sessions.json", {}), ("documents.json", {}),
         ("shares.json", {}),   ("audit.json", []),
     ):
-        (tmp_path / name).write_text(json.dumps(content))
+        write_json(tmp_path / name, content)
 
     app.config.update({
         "TESTING": True,
@@ -71,9 +71,10 @@ def env(tmp_path):
         "UPLOAD_FOLDER": str(tmp_path),
     })
     return {
-        "tmp_path": tmp_path,
-        "alice_id": alice_id, "alice_pass": "Str0ng!Password#1",
-        "bob_id":   bob_id,   "bob_pass":   "Str0ng!Password#2",
+        "tmp_path":   tmp_path,
+        "alice_id":   alice_id, "alice_pass":   "Str0ng!Password#1",
+        "bob_id":     bob_id,   "bob_pass":     "Str0ng!Password#2",
+        "guest_id":   guest_id, "guest_pass":   "Str0ng!Guest#123",
     }
 
 
@@ -100,9 +101,7 @@ class TestUnauthenticatedAccess:
 class TestDocumentOwnership:
     def _seed(self, env, owner_id):
         doc_id, doc = _make_doc(owner_id)
-        (env["tmp_path"] / "documents.json").write_text(
-            json.dumps({doc_id: doc})
-        )
+        write_json(env["tmp_path"] / "documents.json", {doc_id: doc})
         return doc_id
 
     def test_owner_can_view(self, env):
@@ -128,9 +127,7 @@ class TestDocumentOwnership:
         with app.test_client() as c:
             login_as(c, "alice", env["alice_pass"])
             c.post(f"/document/{doc_id}/delete")
-            r = c.get("/dashboard", follow_redirects=True)
-            # Document should not appear
-            docs = json.loads((env["tmp_path"] / "documents.json").read_text())
+            docs = read_json(env["tmp_path"] / "documents.json")
             assert docs[doc_id]["is_deleted"] is True
 
     def test_missing_doc_returns_404(self, env):
@@ -147,7 +144,7 @@ def _enc_file(env, doc_id):
 class TestSharing:
     def _seed_share(self, env, doc_id, shared_with_id, role="viewer"):
         share_id = str(uuid.uuid4())
-        shares = {
+        write_json(env["tmp_path"] / "shares.json", {
             share_id: {
                 "share_id":            share_id,
                 "doc_id":              doc_id,
@@ -157,15 +154,11 @@ class TestSharing:
                 "created_at":          time.time(),
                 "granted_by":          env["alice_id"],
             }
-        }
-        (env["tmp_path"] / "shares.json").write_text(json.dumps(shares))
+        })
 
     def test_viewer_can_download(self, env):
         doc_id, doc = _make_doc(env["alice_id"])
-        (env["tmp_path"] / "documents.json").write_text(
-            json.dumps({doc_id: doc})
-        )
-        # Create dummy encrypted file
+        write_json(env["tmp_path"] / "documents.json", {doc_id: doc})
         (env["tmp_path"] / f"{doc_id}_v1.enc").write_bytes(b"")
         self._seed_share(env, doc_id, env["bob_id"], role="viewer")
         with app.test_client() as c:
@@ -174,9 +167,7 @@ class TestSharing:
 
     def test_editor_can_view_version_upload_form(self, env):
         doc_id, doc = _make_doc(env["alice_id"])
-        (env["tmp_path"] / "documents.json").write_text(
-            json.dumps({doc_id: doc})
-        )
+        write_json(env["tmp_path"] / "documents.json", {doc_id: doc})
         self._seed_share(env, doc_id, env["bob_id"], role="editor")
         with app.test_client() as c:
             login_as(c, "bob", env["bob_pass"])
@@ -185,9 +176,7 @@ class TestSharing:
 
     def test_viewer_cannot_see_version_upload_form(self, env):
         doc_id, doc = _make_doc(env["alice_id"])
-        (env["tmp_path"] / "documents.json").write_text(
-            json.dumps({doc_id: doc})
-        )
+        write_json(env["tmp_path"] / "documents.json", {doc_id: doc})
         self._seed_share(env, doc_id, env["bob_id"], role="viewer")
         with app.test_client() as c:
             login_as(c, "bob", env["bob_pass"])
@@ -196,7 +185,7 @@ class TestSharing:
 
     def test_download_own_document(self, env):
         doc_id, doc = _make_doc(env["alice_id"])
-        (env["tmp_path"] / "documents.json").write_text(json.dumps({doc_id: doc}))
+        write_json(env["tmp_path"] / "documents.json", {doc_id: doc})
         _enc_file(env, doc_id)
         with app.test_client() as c:
             login_as(c, "alice", env["alice_pass"])
@@ -206,7 +195,7 @@ class TestSharing:
 
     def test_download_shared_document(self, env):
         doc_id, doc = _make_doc(env["alice_id"])
-        (env["tmp_path"] / "documents.json").write_text(json.dumps({doc_id: doc}))
+        write_json(env["tmp_path"] / "documents.json", {doc_id: doc})
         _enc_file(env, doc_id)
         self._seed_share(env, doc_id, env["bob_id"], role="viewer")
         with app.test_client() as c:
@@ -216,14 +205,14 @@ class TestSharing:
 
     def test_download_unshared_document(self, env):
         doc_id, doc = _make_doc(env["alice_id"])
-        (env["tmp_path"] / "documents.json").write_text(json.dumps({doc_id: doc}))
+        write_json(env["tmp_path"] / "documents.json", {doc_id: doc})
         with app.test_client() as c:
             login_as(c, "bob", env["bob_pass"])
             assert c.get(f"/document/{doc_id}/download").status_code == 403
 
     def test_editor_can_upload_version(self, env):
         doc_id, doc = _make_doc(env["alice_id"])
-        (env["tmp_path"] / "documents.json").write_text(json.dumps({doc_id: doc}))
+        write_json(env["tmp_path"] / "documents.json", {doc_id: doc})
         self._seed_share(env, doc_id, env["bob_id"], role="editor")
         with app.test_client() as c:
             login_as(c, "bob", env["bob_pass"])
@@ -234,7 +223,7 @@ class TestSharing:
 
     def test_viewer_cannot_upload_version(self, env):
         doc_id, doc = _make_doc(env["alice_id"])
-        (env["tmp_path"] / "documents.json").write_text(json.dumps({doc_id: doc}))
+        write_json(env["tmp_path"] / "documents.json", {doc_id: doc})
         self._seed_share(env, doc_id, env["bob_id"], role="viewer")
         with app.test_client() as c:
             login_as(c, "bob", env["bob_pass"])
@@ -245,16 +234,14 @@ class TestSharing:
 
     def test_share_schema_fields(self, env):
         doc_id, doc = _make_doc(env["alice_id"])
-        (env["tmp_path"] / "documents.json").write_text(
-            json.dumps({doc_id: doc})
-        )
+        write_json(env["tmp_path"] / "documents.json", {doc_id: doc})
         with app.test_client() as c:
             login_as(c, "alice", env["alice_pass"])
             c.post(f"/document/{doc_id}/share", data={
                 "username": "bob",
                 "role":     "editor",
             })
-        shares = json.loads((env["tmp_path"] / "shares.json").read_text())
+        shares = read_json(env["tmp_path"] / "shares.json")
         assert len(shares) == 1
         s = next(iter(shares.values()))
         for field in ("share_id", "doc_id", "owner_id",
@@ -271,12 +258,77 @@ class TestAdminAccess:
             assert c.get("/admin").status_code == 403
 
     def test_admin_role_user_can_access_admin(self, env):
-        # Promote alice to admin directly in the data store
-        users = json.loads((env["tmp_path"] / "users.json").read_text())
+        users = read_json(env["tmp_path"] / "users.json")
         for uid in users:
             if users[uid]["username"] == "alice":
                 users[uid]["role"] = "admin"
-        (env["tmp_path"] / "users.json").write_text(json.dumps(users))
+        write_json(env["tmp_path"] / "users.json", users)
         with app.test_client() as c:
             login_as(c, "alice", env["alice_pass"])
             assert c.get("/admin").status_code == 200
+
+
+class TestGuestPermissions:
+    def _seed_doc_with_share(self, env, role="viewer"):
+        doc_id, doc = _make_doc(env["alice_id"])
+        write_json(env["tmp_path"] / "documents.json", {doc_id: doc})
+        share_id = str(uuid.uuid4())
+        write_json(env["tmp_path"] / "shares.json", {
+            share_id: {
+                "share_id":            share_id,
+                "doc_id":              doc_id,
+                "owner_id":            env["alice_id"],
+                "shared_with_user_id": env["guest_id"],
+                "role":                role,
+                "created_at":          time.time(),
+                "granted_by":          env["alice_id"],
+            }
+        })
+        return doc_id
+
+    def test_guest_can_view_shared_document(self, env):
+        doc_id = self._seed_doc_with_share(env)
+        with app.test_client() as c:
+            login_as(c, "guestuser", env["guest_pass"])
+            assert c.get(f"/document/{doc_id}").status_code == 200
+
+    def test_guest_cannot_upload_document(self, env):
+        with app.test_client() as c:
+            login_as(c, "guestuser", env["guest_pass"])
+            r = c.post("/upload",
+                       data={"file": (io.BytesIO(b"data"), "test.txt")},
+                       content_type="multipart/form-data")
+            assert r.status_code == 403
+
+    def test_guest_cannot_upload_version(self, env):
+        doc_id = self._seed_doc_with_share(env, role="viewer")
+        with app.test_client() as c:
+            login_as(c, "guestuser", env["guest_pass"])
+            r = c.post(f"/document/{doc_id}/version",
+                       data={"file": (io.BytesIO(b"attempt"), "test.txt")},
+                       content_type="multipart/form-data")
+            assert r.status_code == 403
+
+    def test_guest_cannot_delete_document(self, env):
+        doc_id = self._seed_doc_with_share(env)
+        with app.test_client() as c:
+            login_as(c, "guestuser", env["guest_pass"])
+            assert c.post(f"/document/{doc_id}/delete").status_code == 403
+
+    def test_guest_cannot_access_admin(self, env):
+        with app.test_client() as c:
+            login_as(c, "guestuser", env["guest_pass"])
+            assert c.get("/admin").status_code == 403
+
+    def test_guest_share_as_editor_saved_as_viewer(self, env):
+        doc_id, doc = _make_doc(env["alice_id"])
+        write_json(env["tmp_path"] / "documents.json", {doc_id: doc})
+        with app.test_client() as c:
+            login_as(c, "alice", env["alice_pass"])
+            c.post(f"/document/{doc_id}/share", data={
+                "username": "guestuser",
+                "role":     "editor",
+            })
+        shares = read_json(env["tmp_path"] / "shares.json")
+        assert len(shares) == 1
+        assert next(iter(shares.values()))["role"] == "viewer"

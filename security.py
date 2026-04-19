@@ -564,6 +564,28 @@ def require_auth(f):
     return decorated
 
 
+def deny_guest(f):
+    """Abort 403 if the authenticated user has role 'guest'."""
+    @wraps(f)
+    def decorated(*args, **kwargs):
+        if not g.get("user_id"):
+            flash("Please log in to continue.")
+            return redirect(url_for("login"))
+        if (g.get("user") or {}).get("role") == "guest":
+            try:
+                current_app.security_logger.log_event(
+                    SecurityLogger.ACCESS_DENIED,
+                    g.get("user_id"), g.get("ip", ""), g.get("ua", ""),
+                    details={"reason": "guest_write_denied", "path": request.path},
+                    severity="WARNING",
+                )
+            except Exception:
+                pass
+            abort(403)
+        return f(*args, **kwargs)
+    return decorated
+
+
 def require_role(*roles):
     """
     Require authentication AND that g.user['role'] is in roles.
