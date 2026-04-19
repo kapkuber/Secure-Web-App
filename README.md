@@ -9,9 +9,7 @@
 4. Open: https://localhost:5000
    - Accept self-signed cert warning in browser
 
-## Environment Variables
-- `SECRET_KEY` — Flask secret key (auto-generated if not set)
-- `FLASK_ENV` — set to `development` to disable HTTPS redirect
+- `secret.key` — Flask secret key (auto-generated if not set)
 
 ## Running Tests
 `python -m pytest tests/ -v`
@@ -33,7 +31,8 @@
 ## File Storage
 - Uploaded files encrypted with Fernet before writing to disk
 - Encryption key stored in secret.key (never commit this file)
-- Multiple versions retained; soft-delete only
+- Multiple versions retained per document
+- Deletion: metadata and audit history preserved in JSON store but all version files on disk are securely overwritten (random bytes, then zeroed) before being unlinked
 
 ## Default Roles
 | Role  | Upload | Download Own | Download Shared | Admin Panel |

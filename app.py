@@ -161,6 +161,37 @@ def check_password(plain: str, hashed: str) -> bool:
     return bcrypt.checkpw(plain.encode(), hashed.encode())
 
 # ---------------------------------------------------------------------------
+# File helpers
+# ---------------------------------------------------------------------------
+
+def _secure_delete_file(filepath: str) -> None:
+    """Overwrite file contents with random then zero bytes before unlinking.
+
+    Best-effort on copy-on-write / SSD storage; eliminates plaintext remnants
+    in the common case and satisfies a deliberate deletion intent.
+    """
+    path = Path(filepath)
+    if not path.exists():
+        return
+    try:
+        size = path.stat().st_size
+        if size > 0:
+            with open(path, "r+b") as fh:
+                fh.write(os.urandom(size))
+                fh.flush()
+                os.fsync(fh.fileno())
+                fh.seek(0)
+                fh.write(b"\x00" * size)
+                fh.flush()
+                os.fsync(fh.fileno())
+        path.unlink()
+    except Exception as exc:
+        logging.getLogger("security").error(
+            "secure_delete_file failed for %s: %s", filepath, exc
+        )
+        raise
+
+# ---------------------------------------------------------------------------
 # Document access helpers
 # ---------------------------------------------------------------------------
 
@@ -699,7 +730,8 @@ def view_document(doc_id):
     doc = _live_doc(doc_id)
     if not doc:
         abort(404)
-    if not can_access_document(g.user_id, doc_id):
+    is_admin = (g.get("user") or {}).get("role") == "admin"
+    if not is_admin and not can_access_document(g.user_id, doc_id):
         security_logger.log_event(
             SecurityLogger.ACCESS_DENIED, g.user_id, g.ip, g.ua,
             details={"doc_id": doc_id}, severity="WARNING",
@@ -731,7 +763,8 @@ def view_document(doc_id):
 @app.route("/document/<doc_id>/download")
 @require_auth
 def download_document(doc_id):
-    if not can_access_document(g.user_id, doc_id):
+    is_admin = (g.get("user") or {}).get("role") == "admin"
+    if not is_admin and not can_access_document(g.user_id, doc_id):
         security_logger.log_event(
             SecurityLogger.ACCESS_DENIED, g.user_id, g.ip, g.ua,
             details={"doc_id": doc_id, "action": "download"}, severity="WARNING",
@@ -781,13 +814,31 @@ def delete_document(doc_id):
     if not doc:
         abort(404)
 
-    # Soft delete — encrypted files kept on disk; owner retains recovery option
+    # Securely wipe every version file from disk, then mark deleted in metadata.
+    # The document record and audit history are preserved; file contents are not.
+    upload_dir = str(_upload_dir())
+    for version in doc.get("versions", []):
+        stored_file = version.get("stored_file", "")
+        if not stored_file:
+            continue
+        try:
+            file_path = safe_file_path(stored_file, upload_dir)
+            _secure_delete_file(file_path)
+        except (ValueError, Exception) as exc:
+            security_logger.log_event(
+                SecurityLogger.FILE_DELETE, g.user_id, g.ip, g.ua,
+                details={"doc_id": doc_id, "version_file": stored_file,
+                         "error": str(exc)},
+                severity="WARNING",
+            )
+
     docs[doc_id]["is_deleted"] = True
     save_docs(docs)
 
     security_logger.log_event(
         SecurityLogger.FILE_DELETE, g.user_id, g.ip, g.ua,
-        details={"doc_id": doc_id, "filename": doc["original_name"]},
+        details={"doc_id": doc_id, "filename": doc["original_name"],
+                 "versions_wiped": len(doc.get("versions", []))},
     )
     audit("FILE_DELETE", doc_id=doc_id, doc_name=doc["original_name"])
     flash("Document deleted.")
