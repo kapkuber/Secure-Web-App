@@ -18,7 +18,7 @@ from security import (
     EncryptedStorage, SecurityLogger, SessionManager, RateLimiter,
     validate_username, validate_email, validate_password,
     sanitize_input, safe_filename, safe_file_path, validate_file_upload,
-    require_auth, require_role, deny_guest,
+    require_auth, require_role, deny_guest, est_timestamp,
 )
 
 app = Flask(__name__)
@@ -26,7 +26,7 @@ app.config.from_object(Config)
 
 BASE_DIR = Path(__file__).parent
 
-# Extension → canonical MIME type
+# Extension mapped to canonical MIME type
 _EXT_MIME = {
     "pdf":  "application/pdf",
     "txt":  "text/plain",
@@ -35,11 +35,7 @@ _EXT_MIME = {
     "jpg":  "image/jpeg",
     "jpeg": "image/jpeg",
 }
-
-# ---------------------------------------------------------------------------
 # Security singletons
-# ---------------------------------------------------------------------------
-
 storage = EncryptedStorage(str(BASE_DIR / "secret.key"))
 
 security_logger = SecurityLogger(
@@ -61,10 +57,7 @@ rate_limiter = RateLimiter(
 
 app.security_logger = security_logger
 
-# ---------------------------------------------------------------------------
 # Path helpers
-# ---------------------------------------------------------------------------
-
 def _data(filename: str) -> str:
     """Absolute path to a file in DATA_FOLDER (works with absolute overrides in tests)."""
     base = Path(app.config["DATA_FOLDER"])
@@ -76,10 +69,7 @@ def _upload_dir() -> Path:
     base = Path(app.config["UPLOAD_FOLDER"])
     return base if base.is_absolute() else BASE_DIR / base
 
-# ---------------------------------------------------------------------------
 # Data store helpers
-# ---------------------------------------------------------------------------
-
 def load_users():    return storage.load_encrypted_json(_data("users.json"),     default={})
 def save_users(d):   storage.save_encrypted_json(_data("users.json"),     d)
 def load_docs():     return storage.load_encrypted_json(_data("documents.json"), default={})
@@ -118,29 +108,24 @@ def _migrate_plaintext_json_to_encrypted() -> None:
 
 _migrate_plaintext_json_to_encrypted()
 
-# ---------------------------------------------------------------------------
 # Audit helper
-# ---------------------------------------------------------------------------
-
 def audit(
     event_type: str,
     doc_id: str = None,
     doc_name: str = None,
     details: dict = None,
+    username: str = None,
+    user_id: str = None,
 ) -> None:
     user = g.get("user") or {}
-    dt = datetime.utcnow()
-    timestamp = (
-        dt.strftime("%Y-%m-%dT%H:%M:%S.")
-        + f"{dt.microsecond // 1000:03d}Z"
-    )
+    timestamp = est_timestamp()
     entries = load_audit()
     entries.append({
         "audit_id":   str(uuid.uuid4()),
         "timestamp":  timestamp,
         "event_type": event_type,
-        "user_id":    g.get("user_id"),
-        "username":   user.get("username", "anonymous"),
+        "user_id":    user_id or g.get("user_id"),
+        "username":   username or user.get("username", "anonymous"),
         "doc_id":     doc_id,
         "doc_name":   doc_name,
         "ip_address": g.get("ip", ""),
@@ -148,10 +133,7 @@ def audit(
     })
     save_audit(entries)
 
-# ---------------------------------------------------------------------------
 # Password helpers
-# ---------------------------------------------------------------------------
-
 def hash_password(plain: str) -> str:
     return bcrypt.hashpw(
         plain.encode(), bcrypt.gensalt(app.config["BCRYPT_ROUNDS"])
@@ -160,16 +142,8 @@ def hash_password(plain: str) -> str:
 def check_password(plain: str, hashed: str) -> bool:
     return bcrypt.checkpw(plain.encode(), hashed.encode())
 
-# ---------------------------------------------------------------------------
 # File helpers
-# ---------------------------------------------------------------------------
-
 def _secure_delete_file(filepath: str) -> None:
-    """Overwrite file contents with random then zero bytes before unlinking.
-
-    Best-effort on copy-on-write / SSD storage; eliminates plaintext remnants
-    in the common case and satisfies a deliberate deletion intent.
-    """
     path = Path(filepath)
     if not path.exists():
         return
@@ -191,12 +165,8 @@ def _secure_delete_file(filepath: str) -> None:
         )
         raise
 
-# ---------------------------------------------------------------------------
 # Document access helpers
-# ---------------------------------------------------------------------------
-
 def _live_doc(doc_id: str) -> dict | None:
-    """Return a document only if it exists and is not soft-deleted."""
     doc = load_docs().get(doc_id)
     return None if (doc is None or doc.get("is_deleted")) else doc
 
@@ -216,7 +186,6 @@ def can_access_document(user_id: str, doc_id: str) -> bool:
     return False
 
 def can_edit_document(user_id: str, doc_id: str) -> bool:
-    """Owner OR users with 'editor' share role."""
     if owns_document(user_id, doc_id):
         return True
     for share in load_shares().values():
@@ -227,37 +196,32 @@ def can_edit_document(user_id: str, doc_id: str) -> bool:
     return False
 
 def get_current_stored_file(doc: dict) -> str:
-    """Return the stored_file path for the document's current version."""
     cv = doc["current_version"]
     for v in doc["versions"]:
         if v["version"] == cv:
             return v["stored_file"]
     return doc["versions"][-1]["stored_file"]
 
-# ---------------------------------------------------------------------------
-# Cookie kwargs
-# ---------------------------------------------------------------------------
-
+# Cookie
 def _cookie_kwargs() -> dict:
     return {
         "httponly": True,
-        # secure=True in production; relaxed only when TESTING=True so the
-        # Werkzeug http:// test client can transmit the cookie.
+        # secure=True in production
         "secure":   not app.config.get("TESTING", False),
         "samesite": "Strict",
         "max_age":  app.config["SESSION_TIMEOUT"],
     }
 
-# ---------------------------------------------------------------------------
 # Template helpers
-# ---------------------------------------------------------------------------
-
 @app.template_filter("ts_to_date")
 def ts_to_date(ts):
     if ts is None:
         return "—"
     try:
-        return datetime.utcfromtimestamp(float(ts)).strftime("%Y-%m-%d %H:%M")
+        from zoneinfo import ZoneInfo
+        eastern = ZoneInfo("America/New_York")
+        dt = datetime.fromtimestamp(float(ts), tz=eastern)
+        return dt.strftime(f"%Y-%m-%d %I:%M %p {dt.strftime('%Z')}")
     except (ValueError, TypeError, OSError):
         return str(ts)
 
@@ -268,20 +232,17 @@ def inject_user():
         "current_user_id": g.get("user_id"),
     }
 
-# ---------------------------------------------------------------------------
 # before_request
-# ---------------------------------------------------------------------------
-
 @app.before_request
 def before_request() -> None:
-    # Force HTTPS in production
+    # Force HTTPS
     if (not app.config.get("TESTING")
             and app.config.get("ENV") != "development"
             and not request.is_secure):
         url = request.url.replace("http://", "https://", 1)
         return redirect(url, code=301)
 
-    # Keep session path in sync with DATA_FOLDER so test fixtures work.
+    # Keep session path in sync with data folder
     session_manager._file = _data("sessions.json")
     session_manager.cleanup_expired()
     g.ip      = request.remote_addr or ""
@@ -297,10 +258,7 @@ def before_request() -> None:
             g.user_id = sess["user_id"]
             g.user    = user
 
-# ---------------------------------------------------------------------------
-# after_request — security headers
-# ---------------------------------------------------------------------------
-
+# after_request security headers
 @app.after_request
 def set_security_headers(response):
     response.headers["Content-Security-Policy"] = (
@@ -326,10 +284,7 @@ def set_security_headers(response):
         response.headers["Cache-Control"] = "no-store"
     return response
 
-# ---------------------------------------------------------------------------
 # Error handlers
-# ---------------------------------------------------------------------------
-
 @app.errorhandler(403)
 def forbidden(e):       return render_template("403.html"), 403
 
@@ -342,10 +297,7 @@ def rate_limited(e):    return render_template("429.html"), 429
 @app.errorhandler(500)
 def internal_error(e):  return render_template("500.html"), 500
 
-# ---------------------------------------------------------------------------
 # Routes — Authentication
-# ---------------------------------------------------------------------------
-
 @app.route("/")
 def index():
     return redirect(url_for("dashboard") if g.user_id else url_for("login"))
@@ -400,7 +352,7 @@ def register():
                 flash("Email already registered.")
                 return render_template("register.html")
 
-        # First user becomes admin; all subsequent users are "user"
+        # First user becomes admin, subsequent users are "user"
         role    = "admin" if not users else "user"
         user_id = str(uuid.uuid4())
         users[user_id] = {
@@ -420,7 +372,7 @@ def register():
             SecurityLogger.REGISTER_SUCCESS, user_id, g.ip, g.ua,
             details={"username": username, "role": role},
         )
-        audit("REGISTER_SUCCESS")
+        audit("REGISTER_SUCCESS", username=username, user_id=user_id)
         flash("Registration successful, please log in")
         return redirect(url_for("login"))
 
@@ -450,7 +402,6 @@ def login():
         )
 
         def fail(msg: str):
-            """Increment failed_attempts, lock if threshold reached, log and flash."""
             if user_id:
                 users[user_id]["failed_attempts"] = (
                     users[user_id].get("failed_attempts", 0) + 1
@@ -472,7 +423,7 @@ def login():
                     )
                 save_users(users)
             else:
-                # Unknown username — still log to avoid revealing user existence
+                # Unknown username log to avoid revealing user existence
                 security_logger.log_event(
                     SecurityLogger.LOGIN_FAILED, None, g.ip, g.ua,
                     details={"username": username}, severity="WARNING",
@@ -501,7 +452,7 @@ def login():
             flash(f"Account locked for {minutes_left} minute(s)")
             return render_template("login.html")
 
-        # Expired lockout — reset silently before checking password
+        # Expired lockout reset before checking password
         if locked_until and time.time() >= float(locked_until):
             users[user_id]["failed_attempts"] = 0
             users[user_id]["locked_until"]    = None
@@ -510,7 +461,7 @@ def login():
         if not check_password(password, user["password_hash"]):
             return fail("Invalid credentials")
 
-        # ---- Successful authentication ----
+        #  Successful authentication
         users[user_id]["failed_attempts"] = 0
         users[user_id]["locked_until"]    = None
         users[user_id]["last_login"]      = time.time()
@@ -521,7 +472,7 @@ def login():
             SecurityLogger.LOGIN_SUCCESS, user_id, g.ip, g.ua,
             details={"username": username},
         )
-        audit("LOGIN_SUCCESS")
+        audit("LOGIN_SUCCESS", username=username, user_id=user_id)
 
         response = make_response(redirect("/dashboard"))
         response.set_cookie("session_token", token, **_cookie_kwargs())
@@ -541,10 +492,7 @@ def logout():
     flash("You have been logged out")
     return response
 
-# ---------------------------------------------------------------------------
-# Routes — Dashboard
-# ---------------------------------------------------------------------------
-
+# Routes Dashboard
 @app.route("/dashboard")
 @require_auth
 def dashboard():
@@ -568,10 +516,7 @@ def dashboard():
 
     return render_template("dashboard.html", own_docs=own_docs, shared_docs=shared_docs)
 
-# ---------------------------------------------------------------------------
-# Routes — Documents
-# ---------------------------------------------------------------------------
-
+# Routes Documents
 @app.route("/upload", methods=["GET", "POST"])
 @require_auth
 @deny_guest
@@ -741,7 +686,7 @@ def view_document(doc_id):
     can_edit = can_edit_document(g.user_id, doc_id)
     is_owner = owns_document(g.user_id, doc_id)
 
-    # Build resolved share list for the owner so the template can show revoke buttons
+    # Build resolved share list for the owner so template can show revoke buttons
     doc_shares = []
     if is_owner:
         users = load_users()
@@ -814,8 +759,8 @@ def delete_document(doc_id):
     if not doc:
         abort(404)
 
-    # Securely wipe every version file from disk, then mark deleted in metadata.
-    # The document record and audit history are preserved; file contents are not.
+    # Securely wipe every version file from disk, mark deleted in metadata.
+    # The document record and audit history are preserved but file contents are not.
     upload_dir = str(_upload_dir())
     for version in doc.get("versions", []):
         stored_file = version.get("stored_file", "")
@@ -844,10 +789,7 @@ def delete_document(doc_id):
     flash("Document deleted.")
     return redirect(url_for("dashboard"))
 
-# ---------------------------------------------------------------------------
 # Routes — Sharing
-# ---------------------------------------------------------------------------
-
 @app.route("/document/<doc_id>/share", methods=["GET", "POST"])
 @require_auth
 def share_document(doc_id):
@@ -875,7 +817,7 @@ def share_document(doc_id):
             flash("You cannot share with yourself.")
             return render_template("share.html", doc_id=doc_id)
 
-        # Guests are always viewer-only regardless of submitted role
+        # Guests are always viewer only regardless of submitted role
         if users.get(target_id, {}).get("role") == "guest":
             role = "viewer"
 
@@ -941,15 +883,11 @@ def revoke_share(doc_id, share_id):
     flash("Share revoked.")
     return redirect(url_for("view_document", doc_id=doc_id))
 
-# ---------------------------------------------------------------------------
-# Routes — Audit
-# ---------------------------------------------------------------------------
-
+# Routes Audit
 @app.route("/document/<doc_id>/audit")
 @require_auth
 def document_audit(doc_id):
-    """Per-document audit trail — accessible by the owner or any admin."""
-    # Fetch doc even if soft-deleted so owners can audit deleted files
+    # load_docs() includes deleted entries
     doc     = load_docs().get(doc_id)
     is_admin = (g.user or {}).get("role") == "admin"
     is_owner = doc is not None and doc.get("owner_id") == g.user_id
@@ -970,10 +908,7 @@ def document_audit(doc_id):
     return render_template("document_audit.html", doc=doc, doc_id=doc_id,
                            entries=entries)
 
-# ---------------------------------------------------------------------------
-# Routes — Admin
-# ---------------------------------------------------------------------------
-
+# Routes Admin
 @app.route("/admin")
 @require_role("admin")
 def admin_panel():
@@ -1045,8 +980,7 @@ def audit_log():
         entries = [e for e in entries
                    if e.get("event_type") == filter_event]
 
-    # Dropdown options derived from the filtered result set so only
-    # values present in the current view are offered as choices.
+    # Dropdown options from the filtered result
     all_users  = sorted({e.get("username") or "" for e in entries
                          if e.get("username")})
     all_events = sorted({e.get("event_type") or "" for e in entries
@@ -1064,15 +998,9 @@ def audit_log():
         total=len(all_entries),
     )
 
-# ---------------------------------------------------------------------------
-# TLS certificate auto-generation (pure Python via cryptography library)
-# ---------------------------------------------------------------------------
-
+# 
+# TLS certificate auto-generation
 def ensure_tls_cert() -> tuple[str, str] | None:
-    """Generate a self-signed cert using the cryptography library.
-
-    Returns (cert_path, key_path) on success, None if unavailable.
-    """
     cert_dir = BASE_DIR / app.config["CERT_FOLDER"]
     cert_path = cert_dir / "cert.pem"
     key_path  = cert_dir / "key.pem"
@@ -1124,12 +1052,8 @@ def ensure_tls_cert() -> tuple[str, str] | None:
         print(f"[WARNING] Could not generate TLS cert: {exc}. Running over HTTP.")
         return None
 
-# ---------------------------------------------------------------------------
 # First-run initialisation
-# ---------------------------------------------------------------------------
-
 def initialize_app() -> None:
-    """Create required directories and seed empty data/log files on first run."""
     import json
 
     for directory in ["data", "logs", "uploads", "certs", "static/css", "static/js", "templates"]:
@@ -1151,10 +1075,7 @@ def initialize_app() -> None:
         if not os.path.exists(log_file):
             open(log_file, "a").close()
 
-# ---------------------------------------------------------------------------
 # Entry point
-# ---------------------------------------------------------------------------
-
 if __name__ == "__main__":
     initialize_app()
     tls = ensure_tls_cert()

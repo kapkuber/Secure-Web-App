@@ -16,5 +16,4 @@ env/
 
 .env
 
-.claude/
 .pytest_cache/

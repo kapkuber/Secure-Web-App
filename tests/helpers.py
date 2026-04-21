@@ -1,4 +1,3 @@
-"""Shared test utilities for encrypted JSON I/O using the app's storage key."""
 from app import storage
 
 

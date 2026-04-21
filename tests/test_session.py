@@ -8,10 +8,7 @@ from app import app, hash_password, storage
 from helpers import write_json, read_json
 
 
-# ---------------------------------------------------------------------------
-# Unit tests — SessionManager directly
-# ---------------------------------------------------------------------------
-
+# Unit tests SessionManager directly
 @pytest.fixture
 def mgr(tmp_path):
     store  = EncryptedStorage(str(tmp_path / "secret.key"))
@@ -92,10 +89,7 @@ class TestSessionManagerUnit:
         assert isinstance(sess["last_activity"], float)
 
 
-# ---------------------------------------------------------------------------
 # Integration tests via Flask routes
-# ---------------------------------------------------------------------------
-
 def _make_user_record(username, password):
     uid = str(uuid.uuid4())
     return uid, {

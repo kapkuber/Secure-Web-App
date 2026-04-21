@@ -5,11 +5,12 @@
 2. `pip install -r requirements.txt`
 3. Run: `python app.py`
    - TLS cert auto-generated on first run
-   - First registered user receives admin role
+   - The first registered user receives admin role
 4. Open: https://localhost:5000
-   - Accept self-signed cert warning in browser
+   - Accept self signed certificate warning in browser
 
-- `secret.key` — Flask secret key (auto-generated if not set)
+- `secret.key` — Flask secret key is auto-generated if not set
+- Guest users must be created by signing in as admin and creating one from admin dashboard. This reduces risk of abuse or malicious access compared to self registration.
 
 ## Running Tests
 `python -m pytest tests/ -v`

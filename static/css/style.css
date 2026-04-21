@@ -7,7 +7,6 @@ body {
     min-height: 100vh;
 }
 
-/* Navbar */
 .navbar {
     background: #1a1a2e;
     color: #fff;
@@ -26,14 +25,12 @@ body {
 .nav-links a:hover { color: #fff; }
 .nav-user { opacity: 0.7; cursor: default; }
 
-/* Container */
 .container {
     max-width: 900px;
     margin: 2rem auto;
     padding: 0 1rem;
 }
 
-/* Flash messages */
 .flash-messages { list-style: none; margin-bottom: 1rem; }
 .flash {
     background: #fff3cd;
@@ -52,7 +49,6 @@ body {
     color: #c0392b;
 }
 
-/* Auth card */
 .auth-card {
     background: #fff;
     border-radius: 8px;
@@ -98,7 +94,7 @@ body {
 .btn-link { background: none; border: none; padding: 0; cursor: pointer; text-decoration: underline; }
 .btn-link.danger { color: #e74c3c; }
 
-/* Tables */
+/* Tables*/
 .doc-table {
     width: 100%;
     border-collapse: collapse;
@@ -128,7 +124,6 @@ body {
 h2 { margin-top: 1.5rem; margin-bottom: 0.5rem; }
 h3 { margin-top: 1.5rem; margin-bottom: 0.5rem; font-size: 1.1rem; }
 
-/* Form select */
 .form-group select {
     width: 100%;
     padding: 0.55rem 0.75rem;
@@ -138,7 +133,7 @@ h3 { margin-top: 1.5rem; margin-bottom: 0.5rem; font-size: 1.1rem; }
     background: #fff;
 }
 
-/* Version table */
+/* Version table*/
 tr.current-version td { background: #f0f2ff; font-weight: 600; }
 tr.deleted-row td     { opacity: 0.45; text-decoration: line-through; }
 .badge {
@@ -152,7 +147,6 @@ tr.deleted-row td     { opacity: 0.45; text-decoration: line-through; }
 }
 small.hint { display: block; color: #888; font-size: 0.78rem; margin-top: 0.2rem; }
 
-/* Error pages */
 .error-page {
     text-align: center;
     padding: 4rem 1rem;

@@ -1,5 +1,5 @@
 {% extends "base.html" %}
-{% block title %}{{ doc.original_name | e }} — SecureWebApp{% endblock %}
+{% block title %}{{ doc.original_name | e }}{% endblock %}
 {% block content %}
 <div class="auth-card" style="max-width:700px">
     <h2>{{ doc.original_name | e }}</h2>
@@ -32,7 +32,6 @@
     </div>
 </div>
 
-{# ---- Active shares (owner only) ---- #}
 {% if is_owner %}
 <h3>Active Shares</h3>
 {% if doc_shares %}
@@ -60,7 +59,6 @@
 {% endif %}
 {% endif %}
 
-{# ---- Version history ---- #}
 <h3>Version History</h3>
 <table class="doc-table">
     <thead><tr><th>Version</th><th>Uploaded</th><th>Size</th></tr></thead>
@@ -80,7 +78,6 @@
     </tbody>
 </table>
 
-{# ---- Upload new version (owner or editor) ---- #}
 {% if can_edit and not doc.get('is_deleted') %}
 <h3>Upload New Version</h3>
 <form method="post" action="{{ url_for('upload_version', doc_id=doc_id) }}"

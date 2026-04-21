@@ -12,6 +12,7 @@ import re
 import secrets
 import hashlib
 from datetime import datetime
+from zoneinfo import ZoneInfo
 from pathlib import Path
 from functools import wraps
 
@@ -20,27 +21,13 @@ from werkzeug.utils import secure_filename as _secure_filename
 from flask import g, request, redirect, url_for, flash, abort, current_app
 
 
-# ===========================================================================
-# EncryptedStorage
-# ===========================================================================
-
 class EncryptedStorage:
-    """
-    Unified file I/O with optional Fernet encryption.
-
-    On init: loads 'secret.key' from key_path, or generates and saves a new one.
-    Provides both plain-JSON and encrypted-JSON helpers, plus raw-bytes encrypt/decrypt.
-    All file I/O is wrapped in try/except with logged errors.
-    """
 
     def __init__(self, key_path: str) -> None:
         self._key_path = Path(key_path)
         self._fernet = self._load_or_create_key()
 
-    # ------------------------------------------------------------------
     # Key management
-    # ------------------------------------------------------------------
-
     def _load_or_create_key(self) -> Fernet:
         if self._key_path.exists():
             try:
@@ -69,10 +56,7 @@ class EncryptedStorage:
             )
             raise
 
-    # ------------------------------------------------------------------
     # Raw bytes encryption
-    # ------------------------------------------------------------------
-
     def encrypt_file(self, file_bytes: bytes) -> bytes:
         try:
             return self._fernet.encrypt(file_bytes)
@@ -92,10 +76,7 @@ class EncryptedStorage:
             logging.getLogger("security").error("decrypt_file failed: %s", exc)
             raise
 
-    # ------------------------------------------------------------------
     # Plain JSON
-    # ------------------------------------------------------------------
-
     def save_json(self, filepath: str, data) -> None:
         try:
             path = Path(filepath)
@@ -129,10 +110,7 @@ class EncryptedStorage:
             )
             return _default
 
-    # ------------------------------------------------------------------
     # Encrypted JSON
-    # ------------------------------------------------------------------
-
     def save_encrypted_json(self, filepath: str, data) -> None:
         try:
             path = Path(filepath)
@@ -151,13 +129,21 @@ class EncryptedStorage:
             path = Path(filepath)
             if not path.exists() or path.stat().st_size == 0:
                 return _default
-            raw = self._fernet.decrypt(path.read_bytes())
-            return json.loads(raw.decode("utf-8"))
-        except InvalidToken as exc:
-            logging.getLogger("security").error(
-                "load_encrypted_json — bad token for %s: %s", filepath, exc
-            )
-            return _default
+            file_bytes = path.read_bytes()
+            try:
+                return json.loads(self._fernet.decrypt(file_bytes).decode("utf-8"))
+            except InvalidToken:
+                # File may be plaintext JSON (e.g. manually deleted and recreated).
+                # Re-encrypt it silently rather than treating it as corruption.
+                try:
+                    data = json.loads(file_bytes.decode("utf-8"))
+                    self.save_encrypted_json(filepath, data)
+                    return data
+                except (json.JSONDecodeError, UnicodeDecodeError):
+                    logging.getLogger("security").error(
+                        "load_encrypted_json — unreadable file %s", filepath
+                    )
+                    return _default
         except json.JSONDecodeError as exc:
             logging.getLogger("security").error(
                 "JSON decode error in encrypted file %s: %s", filepath, exc
@@ -170,17 +156,19 @@ class EncryptedStorage:
             return _default
 
 
-# ===========================================================================
-# SecurityLogger
-# ===========================================================================
+
+_EASTERN = ZoneInfo("America/New_York")
+
+
+def est_timestamp() -> str:
+    now = datetime.now(_EASTERN)
+    abbr = now.strftime("%Z")  # EST or EDT
+    return now.strftime(f"%Y-%m-%d %I:%M:%S %p {abbr}")
+
 
 class SecurityLogger:
-    """
-    Dual-handler logger writing JSON event records to security.log and access.log.
-    Use log_event() for all security-relevant actions.
-    """
 
-    # Event type constants
+    # Event type
     LOGIN_SUCCESS           = "LOGIN_SUCCESS"
     LOGIN_FAILED            = "LOGIN_FAILED"
     ACCOUNT_LOCKED          = "ACCOUNT_LOCKED"
@@ -205,11 +193,12 @@ class SecurityLogger:
 
     _ACCESS_EVENTS = frozenset({
         LOGIN_SUCCESS, LOGOUT, DATA_ACCESS,
-        FILE_UPLOAD, FILE_DOWNLOAD, SESSION_CREATED,
+        FILE_UPLOAD, FILE_DOWNLOAD,
     })
 
     def __init__(self, security_log_path: str, access_log_path: str) -> None:
         fmt = logging.Formatter("%(asctime)s - %(levelname)s - %(message)s")
+        fmt.formatTime = lambda record, datefmt=None: est_timestamp()
 
         self._sec = logging.getLogger("security")
         if not self._sec.handlers:
@@ -239,7 +228,7 @@ class SecurityLogger:
         severity: str = "INFO",
     ) -> None:
         entry = json.dumps({
-            "timestamp":  datetime.utcnow().isoformat(),
+            "timestamp":  est_timestamp(),
             "event_type": event_type,
             "user_id":    user_id,
             "ip":         ip,
@@ -258,16 +247,7 @@ class SecurityLogger:
             logger.info(entry)
 
 
-# ===========================================================================
-# SessionManager
-# ===========================================================================
-
 class SessionManager:
-    """
-    Server-side session management backed by data/sessions.json (plain JSON).
-    Sessions are keyed by a random urlsafe token stored in an HttpOnly cookie.
-    """
-
     def __init__(
         self,
         sessions_file: str,
@@ -299,9 +279,13 @@ class SessionManager:
             "user_agent":    user_agent,
         }
         self._save(sessions)
+        self._logger.log_event(
+            SecurityLogger.SESSION_CREATED, user_id, ip, user_agent,
+            details={"token_prefix": token[:8]},
+        )
         return token
 
-    _MAX_SESSION_AGE = 8 * 3600  # 8-hour absolute lifetime regardless of activity
+    _MAX_SESSION_AGE = 8 * 3600  # 8-hour absolute lifetime
 
     def validate_session(self, token: str) -> dict | None:
         if not token:
@@ -333,8 +317,15 @@ class SessionManager:
         if not token:
             return
         sessions = self._load()
-        sessions.pop(token, None)
+        sess = sessions.pop(token, None)
         self._save(sessions)
+        if sess:
+            self._logger.log_event(
+                SecurityLogger.SESSION_DESTROYED,
+                sess.get("user_id"), sess.get("ip_address", ""),
+                sess.get("user_agent", ""),
+                details={"token_prefix": token[:8]},
+            )
 
     def cleanup_expired(self) -> None:
         sessions = self._load()
@@ -352,20 +343,12 @@ class SessionManager:
             self._save(sessions)
 
 
-# ===========================================================================
-# RateLimiter (in-memory)
-# ===========================================================================
-
+# RateLimiter (in-memory) keyed by IP with sliding window logic.
 class RateLimiter:
-    """
-    Sliding-window rate limiter keyed by IP address.
-    State is in-process only — resets on server restart.
-    """
-
     def __init__(self, max_attempts: int, window_seconds: int) -> None:
         self._max     = max_attempts
         self._window  = window_seconds
-        self._store: dict[str, list] = {}  # {ip: [timestamp, ...]}
+        self._store: dict[str, list] = {}
 
     def _prune(self, ip: str) -> None:
         cutoff = time.time() - self._window
@@ -383,10 +366,7 @@ class RateLimiter:
         return max(0, self._max - len(self._store.get(ip, [])))
 
 
-# ===========================================================================
 # Input Validation
-# ===========================================================================
-
 def validate_username(s: str) -> bool:
     """3–20 characters, alphanumeric + underscore only."""
     return bool(re.fullmatch(r"^[a-zA-Z0-9_]{3,20}$", s or ""))
@@ -418,7 +398,6 @@ def validate_password(s: str) -> list:
 
 
 def sanitize_input(s) -> str:
-    """HTML-escape all user-supplied strings before storage or display."""
     return html.escape(str(s))
 
 
@@ -430,10 +409,6 @@ def safe_filename(
     ip: str = "",
     ua: str = "",
 ) -> str:
-    """
-    Sanitize a filename: werkzeug secure_filename + regex + extension whitelist.
-    Raises ValueError (with optional security log) on failure.
-    """
     name = _secure_filename(filename)
     if not name or not re.fullmatch(r"^[\w\-\.]+$", name):
         if logger:
@@ -463,9 +438,6 @@ def safe_file_path(
     ip: str = "",
     ua: str = "",
 ) -> str:
-    """
-    Build an absolute path inside base_dir; raises ValueError on path traversal.
-    """
     full = os.path.abspath(os.path.join(base_dir, filename))
     base = os.path.abspath(base_dir)
     if not (full == base or full.startswith(base + os.sep)):
@@ -479,12 +451,12 @@ def safe_file_path(
     return full
 
 
-# Magic byte signatures for MIME detection (first 261 bytes)
+#  byte signatures for MIME detection (first 261 bytes)
 _MAGIC: list[tuple[bytes, str]] = [
-    (b"\x25\x50\x44\x46",                   "application/pdf"),   # %PDF
+    (b"\x25\x50\x44\x46",                   "application/pdf"),   
     (b"\x89\x50\x4e\x47\x0d\x0a\x1a\x0a", "image/png"),
     (b"\xff\xd8\xff",                        "image/jpeg"),
-    (b"\x50\x4b\x03\x04",                   "application/zip"),   # ZIP / DOCX
+    (b"\x50\x4b\x03\x04",                   "application/zip"), 
 ]
 
 _DOCX_MIME = (
@@ -505,10 +477,8 @@ def validate_file_upload(
     allowed_mimes: set,
     max_size: int,
 ) -> tuple[bool, str]:
-    """
-    Validate a Werkzeug FileStorage object.
-    Returns (valid: bool, reason: str).
-    """
+
+    # Validate a Werkzeug FileStorage object
     filename = file_storage_obj.filename or ""
     if not filename:
         return False, "No filename provided."
@@ -523,7 +493,7 @@ def validate_file_upload(
 
     detected = _detect_mime(header)
 
-    # Plain text: no magic signature — verify UTF-8 decodability
+    # Plain text: no magic signature verify UTF-8 decodability
     if ext == "txt" and detected is None:
         try:
             header.decode("utf-8")
@@ -531,7 +501,7 @@ def validate_file_upload(
         except UnicodeDecodeError:
             return False, "Text file contains non-UTF-8 content."
 
-    # DOCX is ZIP-based; remap the MIME
+    # DOCX is ZIP-based remap the MIME
     if ext == "docx" and detected == "application/zip":
         detected = _DOCX_MIME
 
@@ -549,10 +519,7 @@ def validate_file_upload(
     return True, "OK"
 
 
-# ===========================================================================
 # Auth Decorators
-# ===========================================================================
-
 def require_auth(f):
     """Redirect to /login if g.user_id is not set."""
     @wraps(f)
@@ -565,7 +532,6 @@ def require_auth(f):
 
 
 def deny_guest(f):
-    """Abort 403 if the authenticated user has role 'guest'."""
     @wraps(f)
     def decorated(*args, **kwargs):
         if not g.get("user_id"):
@@ -587,11 +553,6 @@ def deny_guest(f):
 
 
 def require_role(*roles):
-    """
-    Require authentication AND that g.user['role'] is in roles.
-    Usage: @require_role('admin')  or  @require_role('admin', 'moderator')
-    Aborts 403 and logs ACCESS_DENIED if the role check fails.
-    """
     def decorator(f):
         @wraps(f)
         def decorated(*args, **kwargs):

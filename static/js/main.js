@@ -1,6 +1,6 @@
 "use strict";
 
-// Client-side password confirmation check
+// Client side password confirmation check
 (function () {
     const form = document.querySelector("form");
     const pw   = document.getElementById("password");
@@ -17,7 +17,7 @@
     }
 })();
 
-// Auto-dismiss flash messages after 5 seconds
+// Auto dismiss flash messages after 5 seconds
 (function () {
     const flashes = document.querySelectorAll(".flash");
     flashes.forEach(function (el) {

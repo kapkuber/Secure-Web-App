@@ -12,10 +12,7 @@ from app import app, hash_password
 from helpers import write_json, read_json
 
 
-# ---------------------------------------------------------------------------
 # Helpers
-# ---------------------------------------------------------------------------
-
 def _make_user(username, password, role="user"):
     uid = str(uuid.uuid4())
     return uid, {
@@ -109,10 +106,7 @@ def login_as(client, username, password):
     client.post("/login", data={"username": username, "password": password})
 
 
-# ---------------------------------------------------------------------------
 # Audit schema tests
-# ---------------------------------------------------------------------------
-
 class TestAuditSchema:
     def test_register_writes_audit_entry(self, env, tmp_path):
         with app.test_client() as c:
@@ -143,14 +137,11 @@ class TestAuditSchema:
             })
         entries = read_json(tmp_path / "audit.json", default=[])
         ts = entries[-1]["timestamp"]
-        assert "T" in ts and ts.endswith("Z")
+        assert "EST" in ts or "EDT" in ts
         assert len(ts) >= 20
 
 
-# ---------------------------------------------------------------------------
 # Per-document audit route
-# ---------------------------------------------------------------------------
-
 class TestDocumentAuditRoute:
     def _setup_doc(self, env):
         doc_id, doc = _make_doc(env["alice_id"])
@@ -233,10 +224,7 @@ class TestDocumentAuditRoute:
         assert r.status_code == 302
 
 
-# ---------------------------------------------------------------------------
 # Admin system audit — filtering
-# ---------------------------------------------------------------------------
-
 class TestAdminAuditFilter:
     def _seed_entries(self, env):
         entries = [
@@ -309,10 +297,7 @@ class TestAdminAuditFilter:
         assert b"FILE_DOWNLOAD" in r.data
 
 
-# ---------------------------------------------------------------------------
 # Share revocation writes audit entry
-# ---------------------------------------------------------------------------
-
 class TestShareRevocationAudit:
     def test_revoke_writes_share_revoked_entry(self, env, tmp_path):
         doc_id,   doc   = _make_doc(env["alice_id"])

@@ -1,12 +1,11 @@
 {% extends "base.html" %}
-{% block title %}System Audit Log — SecureWebApp{% endblock %}
+{% block title %}System Audit Log{% endblock %}
 {% block extra_styles %}
 <style>.container { max-width: 1400px; }</style>
 {% endblock %}
 {% block content %}
 <h2>System Audit Log</h2>
 
-{# ---- Filter form ---- #}
 <form method="get" action="{{ url_for('audit_log') }}" class="filter-bar">
     <label for="f-user">User</label>
     <select id="f-user" name="user">

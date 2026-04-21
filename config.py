@@ -14,12 +14,12 @@ class Config:
         'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
         'image/png', 'image/jpeg'
     }
-    SESSION_TIMEOUT = 1800       # 30 minutes
+    SESSION_TIMEOUT = 1800     # 30 minutes
     SESSION_COOKIE_HTTPONLY = True
     SESSION_COOKIE_SAMESITE = "Lax"
     BCRYPT_ROUNDS = 12
     MAX_FAILED_ATTEMPTS = 5
-    LOCKOUT_DURATION = 900       # 15 minutes
+    LOCKOUT_DURATION = 900     # 15 minutes
     RATE_LIMIT_ATTEMPTS = 10
-    RATE_LIMIT_WINDOW = 60       # seconds
+    RATE_LIMIT_WINDOW = 60      # seconds
     ENV = os.environ.get('FLASK_ENV', 'production')
