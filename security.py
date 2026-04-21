@@ -172,6 +172,7 @@ class SecurityLogger:
     LOGIN_SUCCESS           = "LOGIN_SUCCESS"
     LOGIN_FAILED            = "LOGIN_FAILED"
     ACCOUNT_LOCKED          = "ACCOUNT_LOCKED"
+    ACCOUNT_UNLOCKED        = "ACCOUNT_UNLOCKED"
     LOGOUT                  = "LOGOUT"
     REGISTER_SUCCESS        = "REGISTER_SUCCESS"
     REGISTER_FAILED         = "REGISTER_FAILED"

@@ -1025,6 +1025,12 @@ def admin_create_guest():
 @app.route("/admin/user/<target_uid>/lockout", methods=["POST"])
 @require_role("admin")
 def admin_toggle_lockout(target_uid):
+    # Validate target_uid is a well-formed UUID to prevent log injection
+    try:
+        uuid.UUID(target_uid)
+    except ValueError:
+        abort(400)
+
     users = load_users()
     if target_uid not in users:
         abort(404)
@@ -1033,6 +1039,17 @@ def admin_toggle_lockout(target_uid):
         return redirect(url_for("admin_panel"))
 
     user = users[target_uid]
+
+    # Admins cannot lock other admins
+    if user.get("role") == "admin":
+        security_logger.log_event(
+            SecurityLogger.ACCESS_DENIED, g.user_id, g.ip, g.ua,
+            details={"reason": "admin_cannot_lock_admin", "target": target_uid},
+            severity="WARNING",
+        )
+        flash("Admins cannot lock out other admin accounts.")
+        return redirect(url_for("admin_panel"))
+
     currently_locked = (
         user.get("locked_until") is not None
         and time.time() < float(user["locked_until"])
@@ -1042,21 +1059,22 @@ def admin_toggle_lockout(target_uid):
         user["locked_until"]    = None
         user["failed_attempts"] = 0
         action = "unlocked"
+        event  = SecurityLogger.ACCOUNT_UNLOCKED
     else:
         user["locked_until"] = time.time() + (365 * 24 * 3600)  # 1 year
         action = "locked"
+        event  = SecurityLogger.ACCOUNT_LOCKED
 
     save_users(users)
     security_logger.log_event(
-        SecurityLogger.ACCOUNT_LOCKED if action == "locked" else SecurityLogger.LOGIN_SUCCESS,
-        target_uid, g.ip, g.ua,
+        event, target_uid, g.ip, g.ua,
         details={"action": f"admin_{action}", "by": g.user["username"],
                  "target": user["username"]},
         severity="WARNING" if action == "locked" else "INFO",
     )
     audit(f"ADMIN_USER_{action.upper()}", details={"target_user_id": target_uid,
                                                     "target_username": user["username"]})
-    flash(f"User '{user['username']}' has been {action}.")
+    flash(f"User '{sanitize_input(user['username'])}' has been {action}.")
     return redirect(url_for("admin_panel"))
 
 
