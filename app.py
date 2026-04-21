@@ -308,6 +308,14 @@ def register():
         return redirect(url_for("dashboard"))
 
     if request.method == "POST":
+        if not app.config.get("TESTING") and not rate_limiter.is_allowed(g.ip):
+            security_logger.log_event(
+                SecurityLogger.RATE_LIMIT_EXCEEDED, None, g.ip, g.ua,
+                details={"endpoint": "register"}, severity="WARNING",
+            )
+            flash("Too many registration attempts. Please wait and try again.")
+            return render_template("register.html"), 429
+
         username = sanitize_input(request.form.get("username", "").strip())
         email    = sanitize_input(request.form.get("email", "").strip().lower())
         password = request.form.get("password", "")
