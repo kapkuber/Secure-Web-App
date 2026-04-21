@@ -16,7 +16,6 @@ class Config:
     }
     SESSION_TIMEOUT = 1800     # 30 minutes
     SESSION_COOKIE_HTTPONLY = True
-    SESSION_COOKIE_SAMESITE = "Lax"
     BCRYPT_ROUNDS = 12
     MAX_FAILED_ATTEMPTS = 5
     LOCKOUT_DURATION = 900     # 15 minutes
