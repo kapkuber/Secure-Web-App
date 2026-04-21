@@ -12,6 +12,8 @@
 ## Info
 - `secret.key` Flask secret key is auto-generated if not set
 - Password change available to logged in users
+- Uploading new version of a file makes old version no longer viewable in app but it still exists in uploads folder
+- Admin user can lockout other users for 1 year using admin page
 - I made it so guest users must be created by signing in as admin and creating one from admin dashboard. Since guest account dont need email to register, attacker with distributed IPs could create mass guest accounts if I allow self registration.
 
 ## Running Tests

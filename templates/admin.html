@@ -9,10 +9,11 @@
 <h3>Users ({{ users | length }})</h3>
 <table class="doc-table">
     <thead>
-        <tr><th>ID</th><th>Username</th><th>Email</th><th>Role</th><th>Created</th><th>Last Login</th><th>Active</th><th>Locked Until</th></tr>
+        <tr><th>ID</th><th>Username</th><th>Email</th><th>Role</th><th>Created</th><th>Last Login</th><th>Active</th><th>Locked Until</th><th>Actions</th></tr>
     </thead>
     <tbody>
     {% for uid, u in users.items() %}
+    {% set admin_locked = u.locked_until is not none and u.locked_until > now_ts %}
     <tr>
         <td class="mono">{{ uid[:8] }}&hellip;</td>
         <td>{{ u.username | e }}</td>
@@ -30,6 +31,19 @@
         <td>{{ u.last_login | ts_to_date }}</td>
         <td>{{ 'Yes' if u.get('is_active', True) else 'No' }}</td>
         <td>{{ u.locked_until | ts_to_date }}</td>
+        <td>
+            {% if uid != current_user_id %}
+            <form method="post" action="{{ url_for('admin_toggle_lockout', target_uid=uid) }}" style="display:inline">
+                {% if admin_locked %}
+                    <button type="submit" class="btn btn-primary" style="font-size:0.8rem;padding:2px 8px">Unlock</button>
+                {% else %}
+                    <button type="submit" class="btn" style="font-size:0.8rem;padding:2px 8px;background:#c0392b;color:#fff">Lock</button>
+                {% endif %}
+            </form>
+            {% else %}
+                <span class="muted">—</span>
+            {% endif %}
+        </td>
     </tr>
     {% endfor %}
     </tbody>

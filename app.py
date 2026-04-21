@@ -230,6 +230,7 @@ def inject_user():
     return {
         "current_user":    g.get("user"),
         "current_user_id": g.get("user_id"),
+        "now_ts":          time.time(),
     }
 
 # before_request
@@ -1018,6 +1019,44 @@ def admin_create_guest():
     )
     audit("GUEST_CREATED", details={"username": username})
     flash(f"Guest account '{username}' created.")
+    return redirect(url_for("admin_panel"))
+
+
+@app.route("/admin/user/<target_uid>/lockout", methods=["POST"])
+@require_role("admin")
+def admin_toggle_lockout(target_uid):
+    users = load_users()
+    if target_uid not in users:
+        abort(404)
+    if target_uid == g.user_id:
+        flash("You cannot lock out your own account.")
+        return redirect(url_for("admin_panel"))
+
+    user = users[target_uid]
+    currently_locked = (
+        user.get("locked_until") is not None
+        and time.time() < float(user["locked_until"])
+    )
+
+    if currently_locked:
+        user["locked_until"]    = None
+        user["failed_attempts"] = 0
+        action = "unlocked"
+    else:
+        user["locked_until"] = time.time() + (365 * 24 * 3600)  # 1 year
+        action = "locked"
+
+    save_users(users)
+    security_logger.log_event(
+        SecurityLogger.ACCOUNT_LOCKED if action == "locked" else SecurityLogger.LOGIN_SUCCESS,
+        target_uid, g.ip, g.ua,
+        details={"action": f"admin_{action}", "by": g.user["username"],
+                 "target": user["username"]},
+        severity="WARNING" if action == "locked" else "INFO",
+    )
+    audit(f"ADMIN_USER_{action.upper()}", details={"target_user_id": target_uid,
+                                                    "target_username": user["username"]})
+    flash(f"User '{user['username']}' has been {action}.")
     return redirect(url_for("admin_panel"))
 
 
