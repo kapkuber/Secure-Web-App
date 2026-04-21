@@ -282,6 +282,7 @@ def set_security_headers(response):
     )
     if g.get("user_id") and not request.path.startswith("/static"):
         response.headers["Cache-Control"] = "no-store"
+    response.headers["Server"] = "SecureWebApp"
     return response
 
 # Error handlers

@@ -193,5 +193,10 @@ class TestSessionIntegration:
         assert len(sessions) == 2
 
     def test_cookie_config(self, env):
-        assert app.config["SESSION_COOKIE_HTTPONLY"] is True
-        assert app.config["SESSION_COOKIE_SAMESITE"] == "Lax"
+        with app.test_client() as c:
+            r = c.post("/login", data={
+                "username": "sessionuser", "password": "Str0ng!Password#1",
+            }, follow_redirects=False)
+        cookie = r.headers.get("Set-Cookie", "")
+        assert "HttpOnly" in cookie
+        assert "SameSite=Strict" in cookie

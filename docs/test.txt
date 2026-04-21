@@ -1,0 +1,245 @@
+TEST SUITE DESCRIPTION
+======================
+SecureWebApp — 6 test files, 147 total tests
+Last updated: 2026-04-20
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+FILE: tests/test_auth.py
+DESC: Authentication flows — registration, login, lockout, logout.
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+class TestRegistration
+  test_successful_registration            — POST /register with valid data returns 200 and success flash
+  test_duplicate_username_rejected        — Second registration with same username shows "taken" error
+  test_duplicate_email_rejected           — Second registration with same email shows email error
+  test_weak_password_rejected             — Short password triggers password validation error
+  test_mismatched_passwords               — Mismatched confirm_password shows "match" error
+  test_invalid_username_characters        — Username with spaces/symbols rejected
+  test_invalid_email_rejected             — Malformed email rejected
+  test_user_record_schema                 — Registered user record contains all required fields with correct types
+
+class TestLogin
+  test_successful_login                   — Valid credentials redirect to dashboard
+  test_wrong_password                     — Wrong password returns "invalid credentials"
+  test_nonexistent_user                   — Unknown username returns "invalid credentials" (no enumeration)
+  test_failed_attempts_incremented        — Failed login increments failed_attempts counter in user record
+  test_last_login_set_on_success          — Successful login sets last_login timestamp as a float
+  test_account_lockout_after_five_failures — Five failed logins locks the account
+  test_locked_until_is_float_timestamp    — locked_until is a future float timestamp after lockout
+  test_locked_message_contains_minutes   — Lockout flash message includes minutes remaining
+  test_login_rate_limit                   — More than 10 login attempts from same IP returns 429
+  test_disabled_account_message          — Disabled (is_active=False) account shows "disabled" message
+
+class TestFirstUserAdmin
+  test_first_registered_user_is_admin    — First registered user gets role="admin"
+  test_second_user_is_not_admin          — Second user gets role="user"; only one admin exists
+
+class TestGetRedirects
+  test_register_redirects_when_logged_in — Authenticated GET /register redirects to /dashboard
+  test_login_redirects_when_logged_in    — Authenticated GET /login redirects to /dashboard
+
+class TestLogout
+  test_logout_clears_session             — After logout, GET /dashboard redirects to login
+  test_logout_flash_message              — Logout shows "logged out" flash message
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+FILE: tests/test_access_control.py
+DESC: Ownership, sharing roles, IDOR prevention, guest permissions, admin access.
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+class TestUnauthenticatedAccess
+  test_dashboard_redirects                — Unauthenticated GET /dashboard redirects to /login
+  test_upload_redirects                   — Unauthenticated GET /upload redirects
+  test_admin_redirects                    — Unauthenticated GET /admin redirects
+
+class TestDocumentOwnership
+  test_owner_can_view                     — Document owner can view their document (200)
+  test_non_owner_cannot_view              — Non-owner gets 403 on another user's document
+  test_non_owner_cannot_delete            — Non-owner POST /delete returns 403
+  test_soft_delete_hides_from_dashboard  — Deleted document has is_deleted=True in storage
+  test_missing_doc_returns_404            — GET on non-existent doc_id returns 404
+
+class TestSharing
+  test_viewer_can_download                — Viewer-role share allows viewing the document
+  test_editor_can_view_version_upload_form — Editor share shows "Upload New Version" UI
+  test_viewer_cannot_see_version_upload_form — Viewer share does not show "Upload New Version"
+  test_download_own_document              — Owner can download their own document; decrypted content matches original
+  test_download_shared_document           — Viewer share allows download (200)
+  test_download_unshared_document         — No share returns 403 on download
+  test_editor_can_upload_version          — Editor can POST new version (200 or 302)
+  test_viewer_cannot_upload_version       — Viewer POST /version returns 403
+  test_share_schema_fields                — Created share record contains all required fields with correct types
+
+class TestAdminAccess
+  test_regular_user_cannot_access_admin  — Non-admin GET /admin returns 403
+  test_admin_role_user_can_access_admin  — User with role="admin" can access /admin (200)
+
+class TestGuestPermissions
+  test_guest_can_view_shared_document    — Guest with viewer share can view document (200)
+  test_guest_cannot_upload_document      — Guest POST /upload returns 403
+  test_guest_cannot_upload_version       — Guest POST /version returns 403
+  test_guest_cannot_delete_document      — Guest POST /delete returns 403
+  test_guest_cannot_access_admin         — Guest GET /admin returns 403
+  test_guest_share_as_editor_saved_as_viewer — Sharing with a guest as "editor" is downgraded and saved as "viewer"
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+FILE: tests/test_input_validation.py
+DESC: Input validation functions, sanitization, file safety, and integration upload edge cases.
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+class TestValidateUsername
+  test_valid                              — "alice_123" passes validation
+  test_min_length                         — 3-character username passes
+  test_max_length                         — 20-character username passes
+  test_too_short                          — 2-character username fails
+  test_too_long                           — 21-character username fails
+  test_space                              — Username with space fails
+  test_special_chars                      — Username with <> fails
+  test_sql_injection                      — SQL injection string fails
+  test_empty                              — Empty string fails
+
+class TestValidateEmail
+  test_valid                              — Standard email passes
+  test_valid_subdomains                   — Plus-address with subdomain TLD passes
+  test_no_at                              — String without @ fails
+  test_no_tld                             — Email without TLD fails
+  test_empty                              — Empty string fails
+
+class TestValidatePassword
+  test_valid                              — Strong password returns empty error list
+  test_too_short                          — Password under 12 chars returns error mentioning "12"
+  test_missing_uppercase                  — All-lowercase password returns errors
+  test_missing_lowercase                  — All-uppercase password returns errors
+  test_missing_digit                      — Password without digit returns errors
+  test_missing_special                    — Password without special char returns errors
+  test_multiple_errors                    — Very short password returns 2+ errors
+  test_boundary_12_chars                  — Exactly 12-char password meeting all rules passes
+
+class TestSanitizeInput
+  test_escapes_script                     — <script> tag is HTML-escaped
+  test_escapes_quotes                     — Quotes and ampersands are escaped
+  test_plain_string_unchanged             — Plain text is returned unchanged
+  test_non_string_coerced                 — Non-string input is coerced to str
+
+class TestSafeFilename
+  test_valid                              — Normal filename returned unchanged
+  test_path_traversal_stripped            — "../etc/passwd.txt" has ".." stripped
+  test_disallowed_extension_raises        — .exe extension raises ValueError
+  test_empty_after_sanitize_raises        — Empty filename raises ValueError
+
+class TestSafeFilePath
+  test_valid_path                         — Valid filename resolves inside base directory
+  test_traversal_raises                   — "../../etc/passwd" raises ValueError with "traversal"
+  test_nested_valid                       — Subdirectory path resolves correctly
+
+class TestFormInputs
+  test_xss_in_username_not_reflected_raw  — XSS payload in username is not reflected as raw HTML
+  test_empty_login_fields                 — Empty login form returns 200 without crash
+  test_oversized_username_rejected        — 300-char username is rejected and no <script> in response
+
+class TestFileUploadIntegration
+  test_xss_in_filename                    — XSS payload in filename is sanitized before storage
+  test_path_traversal_in_filename         — Path traversal filename raises ValueError in safe_filename
+  test_path_traversal_in_download         — GET /document/../secret returns 301/302/400/404
+  test_file_extension_whitelist           — .exe file is rejected with "rejected" or "not allowed" message
+  test_oversized_file                     — File over 16 MB returns 413, 200, or 302
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+FILE: tests/test_encryption.py
+DESC: EncryptedStorage unit tests — key management, file encryption, JSON helpers.
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+class TestKeyManagement
+  test_key_file_is_created                — EncryptedStorage creates key file on first init
+  test_key_file_reloaded_on_reinit        — Two instances sharing the same key file can cross-decrypt
+
+class TestEncryptDecrypt
+  test_encrypt_returns_bytes              — encrypt_file returns bytes
+  test_roundtrip                          — Encrypt then decrypt returns original data
+  test_encrypted_output_differs_each_call — Same input produces different ciphertext each call (IV randomness)
+  test_tampered_ciphertext_raises         — Bit-flipped ciphertext raises an exception on decrypt
+  test_encrypted_file_not_readable_as_plaintext — Plaintext is not present in ciphertext bytes
+  test_wrong_key_raises                   — Decrypting with a different key raises InvalidToken
+  test_empty_payload_roundtrip            — Empty bytes encrypt/decrypt successfully
+  test_large_payload_roundtrip            — 5 MB payload encrypts/decrypts correctly
+
+class TestSaveLoadJson
+  test_save_and_load                      — save_json/load_json roundtrip preserves data
+  test_load_missing_returns_default       — load_json on missing file returns provided default
+  test_load_empty_file_returns_default    — load_json on empty file returns default
+  test_load_corrupt_returns_default       — load_json on invalid JSON returns default
+
+class TestSaveLoadEncryptedJson
+  test_encrypted_roundtrip                — save_encrypted_json/load_encrypted_json preserves data
+  test_encrypted_file_is_binary           — Encrypted JSON file is not parseable as plain JSON
+  test_wrong_key_returns_default          — Loading encrypted file with wrong key returns default
+  test_load_missing_returns_default       — load_encrypted_json on missing file returns default
+
+class TestUploadIntegration
+  test_uploaded_file_stored_encrypted     — File uploaded via /upload is stored as .enc and plaintext is not present in stored bytes
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+FILE: tests/test_session.py
+DESC: SessionManager unit tests and session integration via Flask routes.
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+class TestSessionManagerUnit
+  test_create_returns_token               — create_session returns a string token of sufficient length
+  test_validate_valid_token               — Valid token validates and returns session with correct user_id
+  test_validate_unknown_token             — Unknown token returns None
+  test_validate_none_and_empty            — None and empty string both return None
+  test_destroy_invalidates                — Destroyed token no longer validates
+  test_expired_session_returns_none       — Session with last_activity in the past returns None
+  test_cleanup_removes_expired            — cleanup_expired removes idle sessions from storage
+  test_validate_updates_last_activity     — Validating a session updates its last_activity timestamp
+  test_session_schema_fields              — Session record contains all required fields with correct types
+
+class TestSessionIntegration
+  test_login_creates_server_session       — Successful login writes one session to sessions.json
+  test_logout_removes_server_session      — Logout removes the session from sessions.json
+  test_expired_session_denied             — Manually-expired session redirects to login on next request
+  test_server_side_revocation_denies_cookie — Clearing sessions.json denies access even with valid cookie
+  test_inactive_user_denied               — Login with is_active=False shows "disabled" message
+  test_invalid_token_rejected             — Cookie with garbage token value redirects to login
+  test_concurrent_sessions               — Two logins for the same user create two independent sessions
+  test_cookie_config                      — SESSION_COOKIE_HTTPONLY is True and SESSION_COOKIE_SAMESITE is "Lax"
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+FILE: tests/test_audit.py
+DESC: Audit trail — schema, per-document route, admin system audit with filters, share revocation.
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+class TestAuditSchema
+  test_register_writes_audit_entry        — Registration writes at least one audit entry with all required fields
+  test_login_writes_audit_entry           — Successful login writes a LOGIN_SUCCESS audit entry
+  test_timestamp_iso_format               — Audit timestamp contains "EST" or "EDT" timezone label
+
+class TestDocumentAuditRoute
+  test_owner_can_view_doc_audit           — Document owner can view audit trail for their document (200)
+  test_non_owner_non_admin_denied         — Non-owner, non-admin GET /document/<id>/audit returns 403
+  test_admin_can_view_any_doc_audit       — Admin can view audit trail for any document (200)
+  test_only_doc_events_shown              — Per-document audit only shows events for that doc (not LOGIN_SUCCESS)
+  test_entries_sorted_newest_first        — Audit entries are displayed newest-first
+  test_missing_doc_returns_404            — Audit route for non-existent doc returns 404
+  test_deleted_doc_still_accessible_to_owner — Owner can still view audit trail after soft-deleting document
+  test_unauthenticated_redirects          — Unauthenticated request to audit route redirects (302)
+
+class TestAdminAuditFilter
+  test_no_filter_shows_all                — Admin audit with no filters shows all event types
+  test_filter_by_user                     — ?user=alice filters to only alice's entries
+  test_filter_by_event                    — ?event=FILE_UPLOAD filters to only that event type
+  test_filter_by_user_and_event           — Combined ?user=alice&event=FILE_UPLOAD filters to alice's uploads only
+  test_filter_no_match_shows_empty        — Filter with no matching user shows "No events"
+  test_non_admin_cannot_access            — Non-admin GET /admin/audit returns 403
+  test_dropdown_options_populated         — Audit filter dropdowns include all usernames and event types present in log
+
+class TestShareRevocationAudit
+  test_revoke_writes_share_revoked_entry  — Revoking a share writes a SHARE_REVOKED audit entry with correct doc_id and share_id
+  test_revoke_removes_share_from_store    — Revoking a share removes it from shares.json
+  test_non_owner_cannot_revoke            — Non-owner POST /revoke returns 403

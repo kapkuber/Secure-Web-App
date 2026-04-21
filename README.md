@@ -10,7 +10,8 @@
    - Accept self signed certificate warning in browser
 
 - `secret.key` Flask secret key is auto-generated if not set
-- Guest users must be created by signing in as admin and creating one from admin dashboard. This reduces risk of abuse or malicious access compared to self registration.
+- I made it so guest users must be created by signing in as admin and creating one from admin dashboard. This reduces attack surface compared to self registration.
+- Password change available to logged in users
 
 ## Running Tests
 `python -m pytest tests/ -v`
