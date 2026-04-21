@@ -492,6 +492,55 @@ def logout():
     flash("You have been logged out")
     return response
 
+@app.route("/change-password", methods=["GET", "POST"])
+@require_auth
+@deny_guest
+def change_password():
+    if request.method == "POST":
+        current_password = request.form.get("current_password", "")
+        new_password     = request.form.get("new_password", "")
+        confirm_password = request.form.get("confirm_password", "")
+
+        users = load_users()
+        user  = users[g.user_id]
+
+        if not check_password(current_password, user["password_hash"]):
+            security_logger.log_event(
+                SecurityLogger.LOGIN_FAILED, g.user_id, g.ip, g.ua,
+                details={"reason": "wrong current password on change-password"},
+                severity="WARNING",
+            )
+            flash("Current password is incorrect.")
+            return render_template("change_password.html")
+
+        errors = validate_password(new_password)
+        if errors:
+            for e in errors:
+                flash(e)
+            return render_template("change_password.html")
+
+        if new_password != confirm_password:
+            flash("Passwords do not match.")
+            return render_template("change_password.html")
+
+        if check_password(new_password, user["password_hash"]):
+            flash("New password must differ from current password.")
+            return render_template("change_password.html")
+
+        users[g.user_id]["password_hash"] = hash_password(new_password)
+        save_users(users)
+
+        security_logger.log_event(
+            SecurityLogger.PASSWORD_CHANGE, g.user_id, g.ip, g.ua,
+            details={"username": user["username"]},
+        )
+        audit("PASSWORD_CHANGE")
+
+        flash("Password changed successfully.")
+        return redirect(url_for("dashboard"))
+
+    return render_template("change_password.html")
+
 # Routes Dashboard
 @app.route("/dashboard")
 @require_auth

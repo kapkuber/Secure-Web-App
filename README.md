@@ -1,4 +1,4 @@
-# SecureShare — Secure Document Sharing System
+# SecureWebApp: Secure Document Sharing System
 
 ## Setup Instructions
 1. Python 3.10+ required
@@ -9,7 +9,7 @@
 4. Open: https://localhost:5000
    - Accept self signed certificate warning in browser
 
-- `secret.key` — Flask secret key is auto-generated if not set
+- `secret.key` Flask secret key is auto-generated if not set
 - Guest users must be created by signing in as admin and creating one from admin dashboard. This reduces risk of abuse or malicious access compared to self registration.
 
 ## Running Tests

@@ -175,6 +175,7 @@ class SecurityLogger:
     LOGOUT                  = "LOGOUT"
     REGISTER_SUCCESS        = "REGISTER_SUCCESS"
     REGISTER_FAILED         = "REGISTER_FAILED"
+    PASSWORD_CHANGE         = "PASSWORD_CHANGE"
     ACCESS_DENIED           = "ACCESS_DENIED"
     DATA_ACCESS             = "DATA_ACCESS"
     FILE_UPLOAD             = "FILE_UPLOAD"
